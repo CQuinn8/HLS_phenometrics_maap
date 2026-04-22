@@ -2,7 +2,7 @@
 """
 run_phenometrics.py
 -------------------
-Full pipeline orchestrator: HLS download → EVI calculation → phenometrics.
+Full pipeline orchestrator: HLS download -> EVI calculation -> phenometrics.
 
 Each upstream step is optional (skip flags) and the script paths are
 soft-coded via arguments, so they can be swapped without touching this file.
@@ -15,8 +15,6 @@ python run_phenometrics.py \
     --output_path /projects/my-public-bucket/hls/testing/ \
     --tile 18SUJ \
     --target_year 2022 \
-    --cadence 10day \
-    --composite_method median \
     --download_script /projects/scripts/hls_download.py \
     --evi_script /projects/scripts/hls_evi_calc.py
 
@@ -26,27 +24,16 @@ python run_phenometrics.py \
     --output_path /projects/my-public-bucket/hls/testing/ \
     --tile 18SUJ \
     --target_year 2022 \
-    --cadence 10day \
-    --composite_method median \
     --skip_download \
     --skip_evi
-
-# Pass extra args through to the download or EVI scripts
-python run_phenometrics.py \
-    ... \
-    --download_args "--max_cloud_cover 20 --sensor S30" \
-    --evi_args "--scale_factor 0.0001 --bands B8A B04"
 """
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 from functools import partial
-
 import geopandas as gpd
 
-# from phenometrics_utils import *
 from phenometric_algorithm import *
 
 
@@ -56,7 +43,7 @@ from phenometric_algorithm import *
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Full pipeline: HLS download → EVI calculation → phenometrics.",
+        description="Full pipeline: HLS download -> EVI calculation -> phenometrics.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -70,15 +57,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target_year",      required=True,  type=int,
                    help="Year to process.")
 
-    # --- Cadence / composite ---
-    p.add_argument("--cadence",          default="10day",
-                   choices=["daily", "10day", "monthly"])
-
-    p.add_argument("--composite_method", default="median",
-                   choices=["median", "max"])
-
     # -------------------------------------------------------------------------
-    # Upstream pipeline scripts  –  NEW
+    # HLS Download and EVI calculation args 
     # -------------------------------------------------------------------------
     p.add_argument("--download_script",  default=None,   type=Path,
                    help="Path to the HLS download script (e.g. hls_download.py). "
@@ -99,8 +79,10 @@ def parse_args() -> argparse.Namespace:
                    help="Skip the EVI calculation step (EVI2 tifs already exist).")
     p.add_argument("--skip_phenometrics", action="store_true",
                    help="Skip phenometrics (useful to test only the upstream steps).")
+    
     # -------------------------------------------------------------------------
-
+    # OPTIONAL ARGS SET WITH DEFAULTS
+    # -------------------------------------------------------------------------
     # --- Context window ---
     p.add_argument("--context_months",  default=12, type=int,
                    help="Months of context passed to enter_processing_stage.")
@@ -117,68 +99,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run_label",        default=None,   type=str)
 
     return p.parse_args()
-
-
-# =============================================================================
-# Upstream step runner  –  NEW
-# =============================================================================
-
-def run_upstream_script(
-    script_path: Path,
-    step_name: str,
-    *,
-    tile: str,
-    target_year: int,
-    data_dir: Path,
-    cadence: str,
-    extra_args: str = "",
-) -> None:
-    """
-    Execute an upstream pipeline script (download or EVI calculation) as a
-    subprocess using the same Python interpreter that is running this file.
-
-    Parameters
-    ----------
-    script_path : Path to the script to run.
-    step_name   : Human-readable label for logging (e.g. "HLS download").
-    extra_args  : Raw string of additional CLI args for the target script.
-    """
-    if not script_path.exists():
-        raise FileNotFoundError(
-            f"[{step_name}] Script not found: {script_path}\n"
-            f"  Check --download_script / --evi_script paths."
-        )
-
-    # Build the command.
-    # sys.executable ensures the same venv/conda env is used – never a bare
-    # 'python' that might resolve to a different environment.
-    cmd = [
-        sys.executable, str(script_path),
-        "--tile",        tile,
-        "--target_year",        str(target_year),
-        "--data_dir",    str(data_dir),
-        "--cadence",     cadence,
-    ]
-
-    # Append any passthrough args (split safely on whitespace)
-    if extra_args.strip():
-        cmd += extra_args.split()
-
-    print(f"\n{'=' * 70}")
-    print(f"  STEP: {step_name}")
-    print(f"  CMD : {' '.join(cmd)}")
-    print(f"{'=' * 70}\n")
-
-    result = subprocess.run(cmd, check=False)   # check=False so we control the message
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[{step_name}] Script exited with code {result.returncode}.\n"
-            f"  Command was: {' '.join(cmd)}\n"
-            f"  Downstream phenometrics will NOT run."
-        )
-
-    print(f"\n✓  {step_name} completed successfully.\n")
 
 
 # =============================================================================
@@ -199,6 +119,7 @@ def run_phenometrics(
     chunks_in_memory: int = 10,
     rebuild: bool = False,
     run_label: str | None = None,
+    
     # --- upstream steps ---
     download_script: Path | None = None,
     evi_script: Path | None = None,
@@ -206,6 +127,7 @@ def run_phenometrics(
     evi_args: str = "",
     skip_download: bool = False,
     skip_evi: bool = False,
+    
     skip_phenometrics: bool = False,
     n_workers: int = 1,
 ) -> dict:
@@ -227,6 +149,20 @@ def run_phenometrics(
         data_dir=data_dir,
         cadence=cadence,
     )
+
+    # Output directory
+    out_subdir = f"{tile}_{cadence}-{composite_method}"
+    if run_label:
+        out_subdir = f"{out_subdir}-{run_label}"
+    if roi_file is not None:
+        out_subdir = f"{out_subdir}-{roi_file.parent.name}"
+
+    output_dir = output_path / out_subdir / str(target_year)
+
+    if not skip_download or not skip_evi or not skip_phenometrics:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        print("No processing requested")
 
     # ------------------------------------------------------------------
     # Step 1 – HLS Download
@@ -266,16 +202,6 @@ def run_phenometrics(
     if skip_phenometrics:
         print("  [Phenometrics] Skipped via --skip_phenometrics.")
         return {}
-
-    # Output directory
-    out_subdir = f"{tile}_{cadence}-{composite_method}"
-    if run_label:
-        out_subdir = f"{out_subdir}-{run_label}"
-    if roi_file is not None:
-        out_subdir = f"{out_subdir}-{roi_file.parent.name}"
-
-    output_dir = output_path / "phenometrics" / out_subdir / str(target_year)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     data_config = ProcessingConfig(
         base_path=Path(data_dir),
@@ -340,15 +266,15 @@ def run_phenometrics(
 # =============================================================================
 
 def main():
-    N_WORKERS=16
+    N_WORKERS=4#16
     args = parse_args()
     run_phenometrics(
         data_dir          = args.data_dir,
         output_path       = args.output_path,
         tile              = args.tile,
         target_year       = args.target_year,
-        cadence           = args.cadence,
-        composite_method  = args.composite_method,
+        # cadence           = args.cadence,
+        # composite_method  = args.composite_method,
         context_months    = args.context_months,
         roi_file          = args.roi_file,
         tile_epsg         = args.tile_epsg,
@@ -373,3 +299,5 @@ if __name__ == "__main__":
     #  python run_phenometrics.py --data_dir="~/Library/CloudStorage/OneDrive-NASA/NASA/HLS/data/" --output_path="~/Library/CloudStorage/OneDrive-NASA/NASA/HLS/results/" --tile=18SUJ --target_year=2020 --cadence=10day --skip_download --skip_evi --context_months=12
 
     #  python run_phenometrics.py --data_dir="/projects/my-public-bucket/hls/testing/10day/" --output_path="/projects/my-public-bucket/hls/testing/operational_phenometrics/10day_median/" --tile=18SUJ --target_year=2020 --cadence=10day --skip_download --skip_evi --context_months=12 --chunk_size=3600
+
+    # python run_phenometrics.py --data_dir="/projects/my-public-bucket/hls/testing/10day-subset-SERC/" --output_path="/projects/my-public-bucket/hls/testing/operational_phenometrics/10day_subset_SERC/" --tile=18SUJ --target_year=2020 --skip_download --skip_evi --context_months=12 --chunk_size=100

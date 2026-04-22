@@ -1,0 +1,22 @@
+[project]
+name = "hls-phenometrics-maap"
+version = "0.1.0"
+description = "Download HLS, compute EVI2, calculate phenometrics for single year HLS tiles"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "argparse>=1.4.0",
+    "dask>=2026.3.0",
+    "earthaccess>=0.17.0",
+    "geopandas>=1.1.3",
+    "joblib>=1.5.3",
+    "maap>=0.0.2",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+    "pathlib>=1.0.1",
+    "rasterio>=1.5.0",
+    "rioxarray>=0.22.0",
+    "scipy>=1.17.1",
+    "xarray>=2026.4.0",
+]
