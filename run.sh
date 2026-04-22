@@ -21,22 +21,23 @@ output_dir="$4"
 chunk_size=100
 
 INPUT_DIR=input
-# OUTPUT_DIR=output
-mkdir -p $output_dir  
+OUTPUT_DIR=output
+mkdir -p $OUTPUT_DIR
+# mkdir -p output_dir
 
 
 # 0. Set up env: in build_env.sh using uv package manager
 unset PROJ_LIB
 unset PROJ_DATA
 
-LOG_FILE="${output_dir}/run_${tile}_${target_year}.log"
+LOG_FILE="${OUTPUT_DIR}/run_${tile}_${target_year}.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "===== Pipeline Started ====="
 echo "Tile:       $tile"
 echo "Year:       $target_year"
-echo "Data dir:   $data_dir"
-echo "Output dir: $output_dir"
+echo "Data dir:   $INPUT_DIR"
+echo "Output dir: $OUTPUT_DIR"
 echo "Basedir:    $basedir"
 
 # 1. Download or check for HLS Scenes
@@ -52,8 +53,8 @@ echo "Stage 3: Calcualte phenometrics"
 
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
-    --data_dir=$data_dir # "/projects/my-public-bucket/hls/testing/10day-subset-SERC/" 
-    --output_path="${output_dir}"
+    --data_dir=$INPUT_DIR # "/projects/my-public-bucket/hls/testing/10day-subset-SERC/" 
+    --output_path="${OUTPUT_DIR}"
     --tile "${tile}"
     --target_year="${target_year}"
     --skip_download 

@@ -1,6 +1,6 @@
 algorithm_description: Run HLS Phenometrics
-algorithm_name: hls-phenometrics
-algorithm_version: v0.1
+algorithm_name: hls-phenometrics # this is the algo name : algo_version
+algorithm_version: main
 build_command: HLS_phenometrics_maap/build-env.sh
 disk_space: 8GB # test mem needed, up to 64GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
