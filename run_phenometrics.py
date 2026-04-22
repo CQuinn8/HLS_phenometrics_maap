@@ -209,7 +209,6 @@ def run_phenometrics(
         cadence=cadence,
     )
     scenes = get_or_build_index(data_config, rebuild=rebuild)
-
     available_years = sorted({s.year for s in scenes})
     if target_year not in available_years:
         raise ValueError(
@@ -268,6 +267,7 @@ def run_phenometrics(
 def main():
     N_WORKERS=4#16
     args = parse_args()
+    print(args)
     run_phenometrics(
         data_dir          = args.data_dir,
         output_path       = args.output_path,

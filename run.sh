@@ -8,23 +8,19 @@ basedir=$(dirname "$(readlink -f "$0")")
 echo $basedir
 
 # Parse positional arguments (2 required, 2 optional)
-if [[ $# -lt 4 ]] || [[ $# -gt 5 ]]; then
-    echo "Error: Expected 4-6 arguments, got $#"
+if [[ $# -lt 2 ]] || [[ $# -gt 3 ]]; then
+    echo "Error: Expected 2 arguments, got $#"
     echo "Usage: $0 <tile> <target_year>"
     exit 1
 fi
  
 tile="$1"
 target_year="$2"
-data_dir="$3"
-output_dir="$4"
 chunk_size=100
 
 INPUT_DIR=input
 OUTPUT_DIR=output
 mkdir -p $OUTPUT_DIR
-# mkdir -p output_dir
-
 
 # 0. Set up env: in build_env.sh using uv package manager
 unset PROJ_LIB
@@ -53,14 +49,13 @@ echo "Stage 3: Calcualte phenometrics"
 
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
-    --data_dir=$INPUT_DIR # "/projects/my-public-bucket/hls/testing/10day-subset-SERC/" 
+    --data_dir="${INPUT_DIR}"
     --output_path="${OUTPUT_DIR}"
-    --tile "${tile}"
     --target_year="${target_year}"
     --skip_download 
     --skip_evi 
     --context_months=12 
-    --chunk_size=$chunk_size
+    --chunk_size="${chunk_size}"
 )
 
 # Execute the command with UV_PROJECT environment variable
