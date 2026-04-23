@@ -93,12 +93,12 @@ if [[ "$DATA_TEST_DIR" == s3://* ]]; then
     fi
 fi
 
-log "Input files:"
-find "$INPUT_DIR" -type f | head -20
-log "Total: $(find "$INPUT_DIR" -type f | wc -l) files"
+# log "Input files:"
+# find "$INPUT_DIR" -type f | head -20
+# log "Total: $(find "$INPUT_DIR" -type f | wc -l) files"
 
-log "Stage 3: Calculating phenometrics"
-
+log "Stage 4: Calculating phenometrics"
+    
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
     --data_dir="${INPUT_DIR}"
