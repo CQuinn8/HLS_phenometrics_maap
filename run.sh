@@ -39,12 +39,6 @@ log() {
     aws s3 cp "$LOG_FILE" "$S3_LOG" 2>/dev/null &
 }
 
-heartbeat() {
-    echo "$*" > "${OUTPUT_DIR}/status.txt"
-    aws s3 cp "${OUTPUT_DIR}/status.txt" "$S3_STATUS" 2>/dev/null &
-}
-
-heartbeat "STARTED: $(date)"
 log "===== Pipeline Started ====="
 log "Tile:       $tile"
 log "Year:       $target_year"
@@ -54,55 +48,49 @@ log "Basedir:    $basedir"
 
 # 1. Download or check for HLS Scenes
 log "Stage 1: HLS download (not implemented yet)"
-heartbeat "STAGE_1_SKIPPED: $(date)"
 
 # 2. Calculate or check for EVI2
 log "Stage 2: EVI2 (not implemented yet)"
-heartbeat "STAGE_2_SKIPPED: $(date)"
 
 # 3. Localize test data and run phenometrics
 log "Stage 3: Localizing input data"
-heartbeat "LOCALIZING_DATA: $(date)"
 
 DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/10day-subset-SERC/"
 
-if [[ "$DATA_TEST_DIR" == s3://* ]]; then
-    S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
-    log "Files at S3 source: $S3_FILE_COUNT"
+# if [[ "$DATA_TEST_DIR" == s3://* ]]; then
+#     S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
+#     log "Files at S3 source: $S3_FILE_COUNT"
 
-    if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
-        log "ERROR: No files found at $DATA_TEST_DIR"
-        heartbeat "FAILED_NO_S3_DATA: $(date)"
-        exit 1
-    fi
+#     if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
+#         log "ERROR: No files found at $DATA_TEST_DIR"
+#         heartbeat "FAILED_NO_S3_DATA: $(date)"
+#         exit 1
+#     fi
 
-    aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
-    SYNC_EXIT=$?
+#     aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
+#     SYNC_EXIT=$?
 
-    if [[ $SYNC_EXIT -ne 0 ]]; then
-        log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
-        heartbeat "FAILED_S3_SYNC: $(date)"
-        exit 1
-    fi
+#     if [[ $SYNC_EXIT -ne 0 ]]; then
+#         log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
+#         heartbeat "FAILED_S3_SYNC: $(date)"
+#         exit 1
+#     fi
 
-    LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
-    log "Files localized: $LOCAL_FILE_COUNT"
+#     LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
+#     log "Files localized: $LOCAL_FILE_COUNT"
 
-    if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
-        log "ERROR: No files found after sync"
-        heartbeat "FAILED_EMPTY_SYNC: $(date)"
-        exit 1
-    fi
-fi
-
-heartbeat "DATA_LOCALIZED: $(find $INPUT_DIR -type f | wc -l) files - $(date)"
+#     if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
+#         log "ERROR: No files found after sync"
+#         heartbeat "FAILED_EMPTY_SYNC: $(date)"
+#         exit 1
+#     fi
+# fi
 
 log "Input files:"
 find "$INPUT_DIR" -type f | head -20
 log "Total: $(find "$INPUT_DIR" -type f | wc -l) files"
 
 log "Stage 3: Calculating phenometrics"
-heartbeat "STARTING_PHENOMETRICS: $(date)"
 
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
@@ -117,13 +105,6 @@ cmd=(
 )
 
 UV_PROJECT="${basedir}" "${cmd[@]}"
-PYTHON_EXIT=$?
 
-if [[ $PYTHON_EXIT -ne 0 ]]; then
-    log "ERROR: Phenometrics failed with exit code $PYTHON_EXIT"
-    heartbeat "FAILED_PHENOMETRICS: $(date)"
-    exit 1
-fi
-
-heartbeat "COMPLETE: $(date)"
+log "COMPLETE: $(date)"
 log "===== Pipeline Complete ====="

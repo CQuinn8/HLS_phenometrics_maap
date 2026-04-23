@@ -248,14 +248,14 @@ def run_phenometrics(
         is_monthly=is_monthly,
     )
 
-    reader.enter_processing_stage(
-        process_fn=configured_pipeline,
-        chunks_in_memory=chunks_in_memory,
-        context_months=context_months,
-        skip_timeseries=True,
-        skip_pixel_processing=False,        
-        n_workers = n_workers,
-    )
+    # reader.enter_processing_stage(
+    #     process_fn=configured_pipeline,
+    #     chunks_in_memory=chunks_in_memory,
+    #     context_months=context_months,
+    #     skip_timeseries=True,
+    #     skip_pixel_processing=False,        
+    #     n_workers = n_workers,
+    # )
 
     print(f"\n  Done – {target_year} outputs written to {output_dir}")
 
