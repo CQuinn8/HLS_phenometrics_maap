@@ -6,13 +6,15 @@ basedir=$(dirname "$(readlink -f "$0")")
 tile="$1"
 target_year="$2"
 
-OUTPUT_DIR="./output"
+OUTPUT_DIR="output"
+INPUT_DIR=input
 mkdir -p $OUTPUT_DIR
 
 echo "CHECKPOINT 1: bash started"
 echo "tile=$tile year=$target_year"
 
-uv run --no-dev --no-sync python -c "print('CHECKPOINT 2: python works', flush=True)"
+# uv run --no-dev --no-sync python -c "print('CHECKPOINT 2: python works', flush=True)"
+conda run --live-stream --name python python ${basedir}/run_phenometrics.py --data_dir="${INPUT_DIR}" --output_path="${OUTPUT_DIR}" --tile="${tile}" --target_year="${target_year}" --skip_download --skip_evi --skip_phenometrics --context_months=12 --chunk_size="${chunk_size}"
 
 echo "CHECKPOINT 3: python exited cleanly"
 
