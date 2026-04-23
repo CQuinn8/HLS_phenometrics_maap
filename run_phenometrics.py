@@ -31,10 +31,10 @@ python run_phenometrics.py \
 import argparse
 import sys
 from pathlib import Path
-# from functools import partial
-# import geopandas as gpd
+from functools import partial
+import geopandas as gpd
 
-# from phenometric_algorithm import *
+from phenometric_algorithm import *
 
 
 # =============================================================================
@@ -211,51 +211,51 @@ def run_phenometrics(
     print(f"  Output dir   : {output_dir}")
     print("=" * 70)
 
-    # data_config = ProcessingConfig(
-    #     base_path=Path(data_dir),
-    #     tile_id=tile,
-    #     cadence=cadence,
-    # )
-    # scenes = get_or_build_index(data_config, rebuild=rebuild)
-    # available_years = sorted({s.year for s in scenes})
-    # if target_year not in available_years:
-    #     raise ValueError(
-    #         f"target_year={target_year} has no EVI scenes in local directory {data_dir}. "
-    #         f"Available years: {available_years}"
-    #     )
+    data_config = ProcessingConfig(
+        base_path=Path(data_dir),
+        tile_id=tile,
+        cadence=cadence,
+    )
+    scenes = get_or_build_index(data_config, rebuild=rebuild)
+    available_years = sorted({s.year for s in scenes})
+    if target_year not in available_years:
+        raise ValueError(
+            f"target_year={target_year} has no EVI scenes in local directory {data_dir}. "
+            f"Available years: {available_years}"
+        )
 
-    # roi_reproj = None
-    # if roi_file is not None:
-    #     roi = gpd.read_file(roi_file)
-    #     roi_reproj = roi.to_crs(f"EPSG:{tile_epsg}")
-    #     print(f"  ROI loaded & reprojected to EPSG:{tile_epsg}")
+    roi_reproj = None
+    if roi_file is not None:
+        roi = gpd.read_file(roi_file)
+        roi_reproj = roi.to_crs(f"EPSG:{tile_epsg}")
+        print(f"  ROI loaded & reprojected to EPSG:{tile_epsg}")
 
-    # reader = ChunkedTimeSeriesReaderStreaming(
-    #     scenes,
-    #     chunk_size=(chunk_size, chunk_size),
-    #     roi=roi_reproj,
-    #     duplicate_handling="mean",
-    #     use_doy_files=use_doy_files,
-    #     output_dir=output_dir,
-    #     context_months=context_months,
-    #     target_year=target_year,
-    #     default_crs=tile_epsg,
-    # )
+    reader = ChunkedTimeSeriesReaderStreaming(
+        scenes,
+        chunk_size=(chunk_size, chunk_size),
+        roi=roi_reproj,
+        duplicate_handling="mean",
+        use_doy_files=use_doy_files,
+        output_dir=output_dir,
+        context_months=context_months,
+        target_year=target_year,
+        default_crs=tile_epsg,
+    )
 
-    # configured_pipeline = partial(
-    #     full_pipeline_chunk,
-    #     apply_threshold=True,
-    #     is_monthly=is_monthly,
-    # )
+    configured_pipeline = partial(
+        full_pipeline_chunk,
+        apply_threshold=True,
+        is_monthly=is_monthly,
+    )
 
-    # reader.enter_processing_stage(
-    #     process_fn=configured_pipeline,
-    #     chunks_in_memory=chunks_in_memory,
-    #     context_months=context_months,
-    #     skip_timeseries=True,
-    #     skip_pixel_processing=False,        
-    #     n_workers = n_workers,
-    # )
+    reader.enter_processing_stage(
+        process_fn=configured_pipeline,
+        chunks_in_memory=chunks_in_memory,
+        context_months=context_months,
+        skip_timeseries=True,
+        skip_pixel_processing=False,        
+        n_workers = n_workers,
+    )
 
     print(f"\n  Done – {target_year} outputs written to {output_dir}")
 
