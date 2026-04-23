@@ -216,7 +216,9 @@ def run_phenometrics(
         tile_id=tile,
         cadence=cadence,
     )
-    scenes = get_or_build_index(data_config, rebuild=rebuild)
+    scenes = build_scene_index(data_config, rebuild=rebuild)
+    print(scenes)
+    print("-------------------------")
     available_years = sorted({s.year for s in scenes})
     if target_year not in available_years:
         raise ValueError(
@@ -225,10 +227,10 @@ def run_phenometrics(
         )
 
     roi_reproj = None
-    if roi_file is not None:
-        roi = gpd.read_file(roi_file)
-        roi_reproj = roi.to_crs(f"EPSG:{tile_epsg}")
-        print(f"  ROI loaded & reprojected to EPSG:{tile_epsg}")
+    # if roi_file is not None:
+    #     roi = gpd.read_file(roi_file)
+    #     roi_reproj = roi.to_crs(f"EPSG:{tile_epsg}")
+    #     print(f"  ROI loaded & reprojected to EPSG:{tile_epsg}")
 
     reader = ChunkedTimeSeriesReaderStreaming(
         scenes,

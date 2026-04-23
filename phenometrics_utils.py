@@ -210,21 +210,13 @@ def save_scene_index(scenes: list[EVIScene], config: ProcessingConfig):
     print(f"Saved index to {config.index_file}")
 
 
-def get_or_build_index(config: ProcessingConfig,
-                       rebuild: bool = False,
-                       recursive: bool = True) -> list[EVIScene]:
-    """Load existing index or build new one."""
-    if config.index_file.exists() and not rebuild:
-        with open(config.index_file, 'r') as f:
-            index = json.load(f)
-
-        scenes = [EVIScene.from_dict(d) for d in index['scenes']]
-        print(f"Loaded {len(scenes)} scenes from index")
-        return scenes
-    else:
-        scenes = discover_evi_scenes(config, recursive=recursive)
-        save_scene_index(scenes, config)
-        return scenes
+def build_scene_index(config: ProcessingConfig,
+                rebuild: bool = False,
+                recursive: bool = True) -> list[EVIScene]:
+    """Build EVI2 scene index"""
+    scenes = discover_evi_scenes(config, recursive=recursive)
+    save_scene_index(scenes, config)
+    return scenes
 
 
 # =============================================================================
@@ -267,7 +259,7 @@ class ChunkedTimeSeriesReaderStreaming:
             roi=None,
             duplicate_handling: str = 'mean',
             use_doy_files: bool = True,
-            default_crs: str = None,  #
+            default_crs: str = None,  
             output_dir: Path = None,
             context_months: int = None,
             target_year: int = None,
