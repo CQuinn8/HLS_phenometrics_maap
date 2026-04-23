@@ -31,8 +31,8 @@ python run_phenometrics.py \
 import argparse
 import sys
 from pathlib import Path
-from functools import partial
-import geopandas as gpd
+# from functools import partial
+# import geopandas as gpd
 
 # from phenometric_algorithm import *
 

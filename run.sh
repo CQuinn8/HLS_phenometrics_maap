@@ -14,11 +14,12 @@ mkdir -p $OUTPUT_DIR
 
 echo "CHECKPOINT 1: bash started"
 echo "tile=$tile year=$target_year"
+echo "N_WORKERS=$N_WORKERS"
 
 # uv run --no-dev --no-sync python -c "print('CHECKPOINT 2: python works', flush=True)"
-conda run --live-stream --name python python ${basedir}/run_phenometrics.py --data_dir="${INPUT_DIR}" --output_path="${OUTPUT_DIR}" --tile="${tile}" --target_year="${target_year}" --skip_download --skip_evi --context_months=12 --chunk_size="100" --n_workers="${N_WORKERS}"
+# conda run --live-stream --name python python -u ${basedir}/run_phenometrics.py --data_dir="${INPUT_DIR}" --output_path="${OUTPUT_DIR}" --tile="${tile}" --target_year="${target_year}" --skip_download --skip_evi --context_months=12 --chunk_size="100" --n_workers="${N_WORKERS}"
 
-echo "CHECKPOINT 3: python exited cleanly"
+echo "CHECKPOINT 2: python exited cleanly"
 
 # #!/usr/bin/env bash
 # # Example usage:
