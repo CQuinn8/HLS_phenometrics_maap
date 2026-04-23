@@ -3,6 +3,8 @@ set -euo pipefail
 
 basedir=$(dirname "$(readlink -f "$0")")
 
+N_WORKERS=$(( $(nproc) - 1 ))
+
 tile="$1"
 target_year="$2"
 
@@ -14,7 +16,7 @@ echo "CHECKPOINT 1: bash started"
 echo "tile=$tile year=$target_year"
 
 # uv run --no-dev --no-sync python -c "print('CHECKPOINT 2: python works', flush=True)"
-conda run --live-stream --name python python ${basedir}/run_phenometrics.py --data_dir="${INPUT_DIR}" --output_path="${OUTPUT_DIR}" --tile="${tile}" --target_year="${target_year}" --skip_download --skip_evi --context_months=12 --chunk_size="100"
+conda run --live-stream --name python python ${basedir}/run_phenometrics.py --data_dir="${INPUT_DIR}" --output_path="${OUTPUT_DIR}" --tile="${tile}" --target_year="${target_year}" --skip_download --skip_evi --context_months=12 --chunk_size="100" --n_workers="${N_WORKERS}"
 
 echo "CHECKPOINT 3: python exited cleanly"
 

@@ -97,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rebuild",          action="store_true",
                    help="Force rebuild of the scene index JSON.")
     p.add_argument("--run_label",        default=None,   type=str)
+    p.add_argument("--n_workers",        default=1,   type=int)
 
     return p.parse_args()
 
@@ -264,7 +265,6 @@ def run_phenometrics(
 # =============================================================================
 
 def main():
-    N_WORKERS=4 #16
     args = parse_args()
     print(args)
     run_phenometrics(
@@ -288,7 +288,7 @@ def main():
         skip_download     = args.skip_download,
         skip_evi          = args.skip_evi,
         skip_phenometrics = args.skip_phenometrics,
-        n_workers = N_WORKERS,
+        n_workers = args.n_workers,
     )
 
 
