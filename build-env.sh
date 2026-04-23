@@ -5,7 +5,7 @@ set -euo pipefail
 # Get current location of build script
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
-conda env update -f ${basedir}/custom_env.yml
+# conda env update -f ${basedir}/custom_env.yml
 
 # # install curl if not available
 # command -v curl >/dev/null 2>&1 || { 
@@ -25,5 +25,5 @@ conda env update -f ${basedir}/custom_env.yml
 # UV_PROJECT=$basedir uv sync --no-dev
 
 # unset PROJ env vars
-unset PROJ_LIB
-unset PROJ_DATA
+# unset PROJ_LIB
+# unset PROJ_DATA
