@@ -48,50 +48,50 @@ log "Basedir:    $basedir"
 # 1a. Download HLS Scenes and compute EVI2
 log "Stage 1a: HLS download and EVI2 calculations"
 # take target_year and generate start/end dates +/- 1 year, check for boundaries 
-prev_year=$(( target_year - 1 ))
-next_year=$(( target_year + 1 ))
+# prev_year=$(( target_year - 1 ))
+# next_year=$(( target_year + 1 ))
 
-cmd_donwload=(
-    uv run --no-dev "${basedir}/download_hls.py"
-    --tile=$tile 
-    --start_date="$prev_year-01-01" 
-    --end_date="$next_year-12-31" 
-    --output_dir="${OUTPUT_DIR}"
-    --scene_only=True 
-    --mask_water=True
-)
+# cmd_donwload=(
+#     uv run --no-dev "${basedir}/download_hls.py"
+#     --tile=$tile 
+#     --start_date="2020-01-01" 
+#     --end_date="2020-12-31" 
+#     --output_dir="${OUTPUT_DIR}"
+#     --scene_only=True 
+#     --mask_water=True
+# )
 
-UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
+# UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
 
 # 1b. Localize test data and run phenometrics
 #log "Stage 1b: Localizing input data"
-# DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/10day-subset-SERC/"
+DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/daily/"
 
-# if [[ "$DATA_TEST_DIR" == s3://* ]]; then
-#     S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
-#     log "Files at S3 source: $S3_FILE_COUNT"
+if [[ "$DATA_TEST_DIR" == s3://* ]]; then
+    S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
+    log "Files at S3 source: $S3_FILE_COUNT"
 
-#     if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
-#         log "ERROR: No files found at $DATA_TEST_DIR"
-#         exit 1
-#     fi
+    if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
+        log "ERROR: No files found at $DATA_TEST_DIR"
+        exit 1
+    fi
 
-#     aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
-#     SYNC_EXIT=$?
+    aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
+    SYNC_EXIT=$?
 
-#     if [[ $SYNC_EXIT -ne 0 ]]; then
-#         log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
-#         exit 1
-#     fi
+    if [[ $SYNC_EXIT -ne 0 ]]; then
+        log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
+        exit 1
+    fi
 
-#     LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
-#     log "Files localized: $LOCAL_FILE_COUNT"
+    LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
+    log "Files localized: $LOCAL_FILE_COUNT"
 
-#     if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
-#         log "ERROR: No files found after sync"
-#         exit 1
-#     fi
-# fi
+    if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
+        log "ERROR: No files found after sync"
+        exit 1
+    fi
+fi
 
 log "Stage 2: Calculating phenometrics"
     
