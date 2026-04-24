@@ -48,18 +48,9 @@ log "Basedir:    $basedir"
 # 1a. Download HLS Scenes and compute EVI2
 log "Stage 1a: HLS download and EVI2 calculations"
 # take target_year and generate start/end dates +/- 1 year, check for boundaries 
-year_int=$(( year ))
-if [[ $year_int -le 2013 ]]; then
-    prev_year=$year_int
-else
-    prev_year=$(( year_int - 1 ))
-fi
+prev_year=$(( target_year - 1 ))
+next_year=$(( target_year + 1 ))
 
-if [[ $year_int -ge 2025 ]]; then
-    next_year=$year_int
-else
-    next_year=$(( year_int + 1 ))
-fi
 cmd_donwload=(
     uv run --no-dev "${basedir}/download_hls.py"
     --tile=$tile 
