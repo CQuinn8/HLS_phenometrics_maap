@@ -16,23 +16,13 @@ fi
 N_WORKERS=$(( $(nproc) - 1 ))
 tile="$1"
 target_year="$2"
-chunk_size=100
+# download_only=True/False
+chunk_size=1220
 
 OUTPUT_DIR=output
 INPUT_DIR=input
 mkdir -p $OUTPUT_DIR
 mkdir -p $INPUT_DIR
-
-# echo "CHECKPOINT 1: bash started"
-# echo "tile=$tile year=$target_year"
-# echo "N_WORKERS=$N_WORKERS"
-
-# #uv run --no-dev --no-sync python -c "print('CHECKPOINT 2: python works', flush=True)"
-# # conda run --live-stream --name python python -u ${basedir}/run_phenometrics.py --data_dir="${INPUT_DIR}" --output_path="${OUTPUT_DIR}" --tile="${tile}" --target_year="${target_year}" --skip_download --skip_evi --context_months=12 --chunk_size="100" --n_workers="${N_WORKERS}"
-
-# echo "CHECKPOINT 2: python exited cleanly"
-# exit 0
-
 
 # 0. Set up env: in build_env.sh using uv package manager
 unset PROJ_LIB
@@ -43,7 +33,6 @@ LOG_FILE="${OUTPUT_DIR}/run_${tile}_${target_year}_$(date +%Y%m%d_%H%M%S).log"
 S3_LOG="s3://maap-ops-workspace/shared/colinquinn/logs/run_${tile}_${target_year}.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
-
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
     aws s3 cp "$LOG_FILE" "$S3_LOG" 2>/dev/null &
@@ -56,57 +45,71 @@ log "Input dir:  $INPUT_DIR"
 log "Output dir: $OUTPUT_DIR"
 log "Basedir:    $basedir"
 
-# 1. Download or check for HLS Scenes
-log "Stage 1: HLS download (not implemented yet)"
-
-# 2. Calculate or check for EVI2
-log "Stage 2: EVI2 (not implemented yet)"
-
-# 3. Localize test data and run phenometrics
-log "Stage 3: Localizing input data"
-
-DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/10day-subset-SERC/"
-
-if [[ "$DATA_TEST_DIR" == s3://* ]]; then
-    S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
-    log "Files at S3 source: $S3_FILE_COUNT"
-
-    if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
-        log "ERROR: No files found at $DATA_TEST_DIR"
-        exit 1
-    fi
-
-    aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
-    SYNC_EXIT=$?
-
-    if [[ $SYNC_EXIT -ne 0 ]]; then
-        log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
-        exit 1
-    fi
-
-    LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
-    log "Files localized: $LOCAL_FILE_COUNT"
-
-    if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
-        log "ERROR: No files found after sync"
-        exit 1
-    fi
+# 1a. Download HLS Scenes and compute EVI2
+log "Stage 1a: HLS download and EVI2 calculations"
+# take target_year and generate start/end dates +/- 1 year, check for boundaries 
+year_int=$(( year ))
+if [[ $year_int -le 2013 ]]; then
+    prev_year=$year_int
+else
+    prev_year=$(( year_int - 1 ))
 fi
 
-# log "Input files:"
-# find "$INPUT_DIR" -type f | head -20
-# log "Total: $(find "$INPUT_DIR" -type f | wc -l) files"
+if [[ $year_int -ge 2025 ]]; then
+    next_year=$year_int
+else
+    next_year=$(( year_int + 1 ))
+fi
+cmd_donwload=(
+    uv run --no-dev "${basedir}/download_hls.py"
+    --tile=$tile 
+    --start_date="$prev_year-01-01" 
+    --end_date="$next_year-12-31" 
+    --output_dir="${OUTPUT_DIR}"
+    --scene_only=True 
+    --mask_water=True
+)
 
-log "Stage 4: Calculating phenometrics"
+UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
+
+# 1b. Localize test data and run phenometrics
+#log "Stage 1b: Localizing input data"
+# DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/10day-subset-SERC/"
+
+# if [[ "$DATA_TEST_DIR" == s3://* ]]; then
+#     S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
+#     log "Files at S3 source: $S3_FILE_COUNT"
+
+#     if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
+#         log "ERROR: No files found at $DATA_TEST_DIR"
+#         exit 1
+#     fi
+
+#     aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
+#     SYNC_EXIT=$?
+
+#     if [[ $SYNC_EXIT -ne 0 ]]; then
+#         log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
+#         exit 1
+#     fi
+
+#     LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
+#     log "Files localized: $LOCAL_FILE_COUNT"
+
+#     if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
+#         log "ERROR: No files found after sync"
+#         exit 1
+#     fi
+# fi
+
+log "Stage 2: Calculating phenometrics"
     
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
-    --data_dir="${INPUT_DIR}"
+    --data_dir="${OUTPUT_DIR}"
     --output_path="${OUTPUT_DIR}"
     --tile="${tile}"
     --target_year="${target_year}"
-    --skip_download
-    --skip_evi
     --context_months=12
     --chunk_size="${chunk_size}"
     --n_workers=$N_WORKERS

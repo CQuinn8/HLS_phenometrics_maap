@@ -17,6 +17,7 @@ dependencies = [
     "pathlib>=1.0.1",
     "rasterio>=1.5.0",
     "rioxarray>=0.22.0",
+    "rustac>=0.9.10",
     "scipy>=1.17.1",
     "xarray>=2026.4.0",
 ]
