@@ -2,7 +2,7 @@
 # Example usage:
 # bash run.sh 18SUJ 2020
 #             <tile> <target_year>
-set -euo pipefail
+set -euxo pipefail
 
 basedir=$(dirname "$(readlink -f "$0")")
 
@@ -97,7 +97,7 @@ log "Stage 2: Calculating phenometrics"
     
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
-    --data_dir="${OUTPUT_DIR}"
+    --data_dir="${INPUT_DIR}"
     --output_path="${OUTPUT_DIR}"
     --tile="${tile}"
     --target_year="${target_year}"
