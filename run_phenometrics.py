@@ -73,8 +73,6 @@ def parse_args() -> argparse.Namespace:
     # --- Runtime / memory ---
     p.add_argument("--chunk_size",       default=600,    type=int)
     p.add_argument("--chunks_in_memory", default=10,     type=int)
-    p.add_argument("--rebuild",          action="store_true",
-                   help="Force rebuild of the scene index JSON.")
     p.add_argument("--run_label",        default=None,   type=str)
     p.add_argument("--n_workers",        default=1,   type=int)
 
@@ -91,13 +89,11 @@ def run_phenometrics(
     tile: str,
     target_year: int,
     cadence: str = "10day",
-    composite_method: str = "median",
     context_months: int = 12,
     roi_file: Path | None = None,
-    tile_epsg: int = 32618,
+    tile_epsg: int = None,
     chunk_size: int = 600,
     chunks_in_memory: int = 10,
-    rebuild: bool = False,
     run_label: str | None = None,    
     skip_phenometrics: bool = False,
     n_workers: int = 1,
@@ -110,7 +106,7 @@ def run_phenometrics(
     is_monthly    = (cadence == "monthly")
 
     # Output directory
-    out_subdir = f"{tile}_{cadence}-{composite_method}"
+    out_subdir = f"{tile}_{cadence}"
     if run_label:
         out_subdir = f"{out_subdir}-{run_label}"
     if roi_file is not None:
@@ -137,9 +133,9 @@ def run_phenometrics(
     data_config = ProcessingConfig(
         base_path=Path(data_dir),
         tile_id=tile,
-        cadence=cadence,
+        # cadence=cadence,
     )
-    scenes = build_scene_index(data_config, rebuild=rebuild)
+    scenes = build_scene_index(data_config)
     available_years = sorted({s.year for s in scenes})
     if target_year not in available_years:
         raise ValueError(
@@ -192,14 +188,11 @@ if __name__ == "__main__":
         output_path       = args.output_path,
         tile              = args.tile,
         target_year       = args.target_year,
-        # cadence           = args.cadence,
-        # composite_method  = args.composite_method,
         context_months    = args.context_months,
         roi_file          = args.roi_file,
         tile_epsg         = args.tile_epsg,
         chunk_size        = args.chunk_size,
         chunks_in_memory  = args.chunks_in_memory,
-        rebuild           = args.rebuild,
         run_label         = args.run_label,
         skip_phenometrics = args.skip_phenometrics,
         n_workers = args.n_workers,

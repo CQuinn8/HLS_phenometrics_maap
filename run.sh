@@ -2,11 +2,10 @@
 # Example usage:
 # bash run.sh 18SUJ 2020
 #             <tile> <target_year>
-set -euxo pipefail
+set -euo pipefail
 
 basedir=$(dirname "$(readlink -f "$0")")
 
-# Parse positional arguments
 if [[ $# -ne 2 ]]; then
     echo "Error: Expected 2 arguments, got $#"
     echo "Usage: $0 <tile> <target_year>"
@@ -17,7 +16,7 @@ N_WORKERS=$(( $(nproc) - 1 ))
 tile="$1"
 target_year="$2"
 # download_only=True/False
-chunk_size=1220
+chunk_size=2000
 
 OUTPUT_DIR=output
 INPUT_DIR=input
@@ -30,7 +29,7 @@ unset PROJ_DATA
 
 # Logging
 LOG_FILE="${OUTPUT_DIR}/run_${tile}_${target_year}_$(date +%Y%m%d_%H%M%S).log"
-S3_LOG="s3://maap-ops-workspace/shared/colinquinn/logs/run_${tile}_${target_year}.log"
+S3_LOG="${OUTPUT_DIR}/test_log.log" # "s3://maap-ops-workspace/shared/colinquinn/logs/run_${tile}_${target_year}.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 log() {
@@ -46,11 +45,10 @@ log "Output dir: $OUTPUT_DIR"
 log "Basedir:    $basedir"
 
 # 1a. Download HLS Scenes and compute EVI2
-log "Stage 1a: HLS download and EVI2 calculations"
+log "Stage 1a: HLS download"
 # take target_year and generate start/end dates +/- 1 year, check for boundaries 
-# prev_year=$(( target_year - 1 ))
-# next_year=$(( target_year + 1 ))
-
+prev_year=$(( target_year - 1 ))
+next_year=$(( target_year + 1 ))
 # cmd_donwload=(
 #     uv run --no-dev "${basedir}/download_hls.py"
 #     --tile=$tile 
@@ -60,38 +58,55 @@ log "Stage 1a: HLS download and EVI2 calculations"
 #     --scene_only=True 
 #     --mask_water=True
 # )
+# UV_PROJECT_download="${basedir}" "${cmd_donwload[@]}"
+# cmd_donwload=(
+#     uv run --no-dev "${basedir}/getHLS.sh"
+#     $tile 
+#     "$prev_year-01-01" 
+#     "$next_year-12-31" 
+#     "${INPUT_DIR}"
+# )
+# UV_PROJECT_download="${basedir}" "${cmd_donwload[@]}"
 
-# UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
+log "Stage 1b: EVI2 calculations"
+cmd_calculate_evi=(
+    uv run --no-dev "${basedir}/calculate_evi.py"
+    --tile=$tile 
+    --indir=$INPUT_DIR
+    --outdir=$INPUT_DIR
+    --n_workers=$(( $(nproc)/2 - 1 ))
+)
+UV_PROJECT_calculate_evi="${basedir}" "${cmd_calculate_evi[@]}"
 
 # 1b. Localize test data and run phenometrics
 #log "Stage 1b: Localizing input data"
-DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/daily/"
+# DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/daily/"
 
-if [[ "$DATA_TEST_DIR" == s3://* ]]; then
-    S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
-    log "Files at S3 source: $S3_FILE_COUNT"
+# if [[ "$DATA_TEST_DIR" == s3://* ]]; then
+#     S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
+#     log "Files at S3 source: $S3_FILE_COUNT"
 
-    if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
-        log "ERROR: No files found at $DATA_TEST_DIR"
-        exit 1
-    fi
+#     if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
+#         log "ERROR: No files found at $DATA_TEST_DIR"
+#         exit 1
+#     fi
 
-    aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
-    SYNC_EXIT=$?
+#     aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
+#     SYNC_EXIT=$?
 
-    if [[ $SYNC_EXIT -ne 0 ]]; then
-        log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
-        exit 1
-    fi
+#     if [[ $SYNC_EXIT -ne 0 ]]; then
+#         log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
+#         exit 1
+#     fi
 
-    LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
-    log "Files localized: $LOCAL_FILE_COUNT"
+#     LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
+#     log "Files localized: $LOCAL_FILE_COUNT"
 
-    if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
-        log "ERROR: No files found after sync"
-        exit 1
-    fi
-fi
+#     if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
+#         log "ERROR: No files found after sync"
+#         exit 1
+#     fi
+# fi
 
 log "Stage 2: Calculating phenometrics"
     

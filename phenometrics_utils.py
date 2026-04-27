@@ -28,31 +28,30 @@ class ProcessingConfig:
     """Configuration for EVI processing pipeline."""
     base_path: Path
     tile_id: str
-    cadence: str = 'monthly'  # 'monthly', '10day', 'daily'
     evi_pattern: str = "*.EVI2.tif"  # glob pattern for EVI files
 
     # Date patterns for different cadences (extracts from filename/dirname)
-    DATE_PATTERNS: dict = field(default_factory=lambda: {
-        'monthly': r'\.(\d{7})\.',  # matches .2018121. (YYYYDOY)
-        '10day': r'\.(\d{7})\.(\d{7})\.',  # '10day': r'\.(\d{7})\.',
-        'daily': r'\.(\d{7})\.\d+\.\d+\.'
-    })
+    # DATE_PATTERNS: dict = field(default_factory=lambda: {
+    #     #'monthly': r'\.(\d{7})\.',  # matches .2018121. (YYYYDOY)
+    #     '10day': r'\.(\d{7})\.(\d{7})\.',  # '10day': r'\.(\d{7})\.',
+    #     'daily': r'\.(\d{7})\.\d+\.\d+\.'
+    # })
 
     # For monthly, we need to load DOY from companion file
-    HAS_DOY_FILE: dict = field(default_factory=lambda: {
-        'daily': False,
-        '10day': True,
-        'monthly': False
-    })
+    # HAS_DOY_FILE: dict = field(default_factory=lambda: {
+    #     'daily': False
+    # })
 
     @property
     def date_pattern(self):
-        return self.DATE_PATTERNS.get(self.cadence)
+        # return self.DATE_PATTERNS.get(self.cadence)
+        return r'\.(\d{7})\.\d+\.\d+\.'
 
     @property
     def has_doy_file(self):
-        return self.HAS_DOY_FILE.get(self.cadence, False)
-
+        # return self.HAS_DOY_FILE.get(self.cadence, False)
+        return False
+        
     @property
     def evi_dir(self) -> Path:
         return self.base_path / self.tile_id
@@ -60,7 +59,7 @@ class ProcessingConfig:
     @property
     def index_file(self) -> Path:
         """JSON index of all EVI files with metadata."""
-        return self.evi_dir / f'evi_index_{self.cadence}.json'
+        return self.evi_dir / f'evi_index_daily.json'
 
 
 # =============================================================================
@@ -74,15 +73,13 @@ class EVIScene:
     doy: int
     year: int
     filepath: Path
-    doy_filepath: Path = None
 
     def to_dict(self):
         return {
             'date': self.date.isoformat(),
             'doy': self.doy,
             'year': self.year,
-            'filepath': str(self.filepath),
-            'doy_filepath': str(self.doy_filepath) if self.doy_filepath else None
+            'filepath': str(self.filepath)
         }
 
     @classmethod
@@ -91,8 +88,7 @@ class EVIScene:
             date=datetime.fromisoformat(d['date']),
             doy=d['doy'],
             year=d['year'],
-            filepath=Path(d['filepath']),
-            doy_filepath=Path(d['doy_filepath']) if d.get('doy_filepath') else None
+            filepath=Path(d['filepath'])
         )
 
 
@@ -103,23 +99,11 @@ def parse_date_from_filename(filename: str, pattern: str, cadence: str = 'daily'
         return None
 
     try:
-        if cadence == 'monthly':
-            # For monthly, use midpoint of composite period
-            start_str = match.group(1)  # YYYYDOY
-            end_str = match.group(2)  # YYYYDOY
-
-            start_year = int(start_str[:4])
-            start_doy = int(start_str[4:])
-            end_doy = int(end_str[4:])
-
-            mid_doy = (start_doy + end_doy) // 2
-            return datetime(start_year, 1, 1) + timedelta(days=mid_doy - 1)
-        else:
-            # For daily/10day, direct DOY
-            date_str = match.group(1)  # YYYYDOY
-            year = int(date_str[:4])
-            doy = int(date_str[4:])
-            return datetime(year, 1, 1) + timedelta(days=doy - 1)
+        # For daily/10day, direct DOY
+        date_str = match.group(1)  # YYYYDOY
+        year = int(date_str[:4])
+        doy = int(date_str[4:])
+        return datetime(year, 1, 1) + timedelta(days=doy - 1)
     except (ValueError, OverflowError):
         return None
 
@@ -140,41 +124,17 @@ def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True) -> lis
     n_with_doy = 0
 
     for filepath in evi_files:
-        date_obj = parse_date_from_filename(filepath.name, config.date_pattern, config.cadence)
+        date_obj = parse_date_from_filename(filepath.name, config.date_pattern)
 
         if date_obj is None:
             print(f"  Warning: Could not parse date from {filepath.name}")
             continue
 
-        # Look for companion DOY file
-        doy_filepath = None
-        if config.has_doy_file:
-            # Try different DOY file naming patterns
-            possible_doy_names = [
-                filepath.name.replace('.EVI2.tif', '.DOY.tif'),
-                filepath.name.replace('.EVI2.tif', '.doy.tif'),
-                filepath.name.replace('EVI2', 'DOY'),
-            ]
-
-            for doy_name in possible_doy_names:
-                potential_doy_path = filepath.parent / doy_name
-                if potential_doy_path.exists():
-                    doy_filepath = potential_doy_path
-                    n_with_doy += 1
-                    break
-
-            if doy_filepath is None:
-                # Only warn for first few missing
-                if n_with_doy == 0 and len(scenes) < 3:
-                    print(f"  Warning: No DOY file found for {filepath.name}")
-                    print(f"    Tried: {possible_doy_names}")
-
         scene = EVIScene(
             date=date_obj,
             doy=date_obj.timetuple().tm_yday,
             year=date_obj.year,
-            filepath=filepath,
-            doy_filepath=doy_filepath
+            filepath=filepath
         )
         scenes.append(scene)
 
@@ -182,8 +142,6 @@ def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True) -> lis
 
     if scenes:
         print(f"Indexed {len(scenes)} scenes from {scenes[0].date.date()} to {scenes[-1].date.date()}")
-        if config.has_doy_file:
-            print(f"  {n_with_doy}/{len(scenes)} scenes have companion DOY files")
     else:
         print("No valid scenes found!")
 
@@ -197,7 +155,7 @@ def save_scene_index(scenes: list[EVIScene], config: ProcessingConfig):
         return
 
     index = {
-        'cadence': config.cadence,  # monthly, 10day, daily
+        # 'cadence': config.cadence,  # monthly, 10day, daily
         'tile_id': config.tile_id,  # MRGS code (18SUJ)
         'n_scenes': len(scenes),  # number of unique observations
         'date_range': [scenes[0].date.isoformat(), scenes[-1].date.isoformat()],  # simple filename based date range
@@ -208,11 +166,10 @@ def save_scene_index(scenes: list[EVIScene], config: ProcessingConfig):
         json.dump(index, f, indent=2)
 
     print(f"Saved index to {config.index_file}")
-
+    
 
 def build_scene_index(config: ProcessingConfig,
-                rebuild: bool = False,
-                recursive: bool = True) -> list[EVIScene]:
+                      recursive: bool = True) -> list[EVIScene]:
     """Build EVI2 scene index"""
     scenes = discover_evi_scenes(config, recursive=recursive)
     save_scene_index(scenes, config)
@@ -298,7 +255,7 @@ class ChunkedTimeSeriesReaderStreaming:
             return
 
         # Check if we have DOY files
-        self.has_doy_files = any(s.doy_filepath is not None for s in self.scenes)
+        self.has_doy_files = False # any(s.doy_filepath is not None for s in self.scenes)
         if self.has_doy_files and use_doy_files:
             print("DOY files detected - will use actual observation dates for phenometrics")
 
@@ -540,8 +497,8 @@ class ChunkedTimeSeriesReaderStreaming:
         chunk_mem = n_dates * cy * cx * 4
 
         # Double if using DOY files
-        if self.has_doy_files and self.use_doy_files:
-            chunk_mem *= 2
+        # if self.has_doy_files and self.use_doy_files:
+        #     chunk_mem *= 2
 
         roi_str = " (clipped to ROI)" if self.roi is not None else ""
         print(f"Tile: {self.ny} x {self.nx}{roi_str}")
@@ -573,15 +530,15 @@ class ChunkedTimeSeriesReaderStreaming:
 
         # DOY file
         doy_data = None
-        if self.use_doy_files and scene.doy_filepath is not None and scene.doy_filepath.exists():
-            try:
-                with rio.open(scene.doy_filepath) as src:
-                    if self._roi_window is not None:
-                        doy_data = src.read(1, window=self._roi_window).astype(np.float32)
-                    else:
-                        doy_data = src.read(1).astype(np.float32)
-            except Exception as e:
-                print(f"  Warning: DOY read failed {scene.doy_filepath.name}: {e}")
+        # if self.use_doy_files and scene.doy_filepath is not None and scene.doy_filepath.exists():
+        #     try:
+        #         with rio.open(scene.doy_filepath) as src:
+        #             if self._roi_window is not None:
+        #                 doy_data = src.read(1, window=self._roi_window).astype(np.float32)
+        #             else:
+        #                 doy_data = src.read(1).astype(np.float32)
+        #     except Exception as e:
+        #         print(f"  Warning: DOY read failed {scene.doy_filepath.name}: {e}")
 
         return evi_data, doy_data
 
@@ -636,7 +593,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         shape = (n_dates, chunk_ny, chunk_nx)
         evi_data = np.full(shape, np.nan, dtype=np.float32)
-        has_doy = self.has_doy_files and self.use_doy_files
+        has_doy = False # self.has_doy_files and self.use_doy_files
         doy_data = np.full(shape, np.nan, dtype=np.float32) if has_doy else None
 
         for i, date in enumerate(self.unique_dates):
@@ -762,7 +719,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         print(f"\nProcess pool: {n_workers} workers — warm across all chunks")
         with Parallel(n_jobs=n_workers, prefer="processes", batch_size="auto") as pool:
-            has_doy = self.has_doy_files and self.use_doy_files
+            has_doy = False #self.has_doy_files and self.use_doy_files
 
             context_years = list(range(self.start_year, self.end_year + 1))
             print(f"Ingesting {len(context_years)} years: {context_years}")
@@ -840,6 +797,11 @@ class ChunkedTimeSeriesReaderStreaming:
                                                    _pool=pool,
                                                    **process_kwargs)
 
+                    def largest_mult16_le(v):
+                        if v < 16:
+                            return 0
+                        return (v // 16) * 16
+                        
                     for metric, arr in chunk_results.items():
                         if metric.startswith('_') or not isinstance(arr, np.ndarray):
                             continue
@@ -847,17 +809,11 @@ class ChunkedTimeSeriesReaderStreaming:
                         if arr.ndim > 2:
                             arr = arr.squeeze()
 
-
                         preferred_block = int(min(self.chunk_size))
                         preferred_block = max(1, min(preferred_block, 512))
                         nx = int(self.nx)
-                        ny = int(self.ny)
-                        def largest_mult16_le(v):
-                            if v < 16:
-                                return 0
-                            return (v // 16) * 16
-
-                        # For tiled output we require multiples-of-16 and <= image dims
+                        ny = int(self.ny)      
+                        
                         blockx = largest_mult16_le(min(preferred_block, nx))
                         blocky = largest_mult16_le(min(preferred_block, ny))
                         use_tiled = (blockx >= 16 and blocky >= 16)
@@ -872,6 +828,7 @@ class ChunkedTimeSeriesReaderStreaming:
                                 'crs': self.crs,
                                 'transform': getattr(self, 'transform'),
                                 'compress': 'DEFLATE',
+                                'nodata': float(self._file_nodata) if getattr(self, "_file_nodata", None) is not None else -9999.0,
                                 # 'bigtiff': 'YES',
                             }
                             if use_tiled:
@@ -884,35 +841,31 @@ class ChunkedTimeSeriesReaderStreaming:
                             else:
                                 pass
 
-                            if getattr(self, "_file_nodata", None) is not None:
-                                profile['nodata'] = float(self._file_nodata)
-                            else:
-                                profile['nodata'] = -9999.0
-
                             out_path = os.path.join(self.output_dir, f"{metric}.tif")
+                            print(f"Writing metric: {metric} -> {out_path}", flush=True)
+                                            
                             if os.path.exists(out_path):
-                                ds = rio.open(out_path, 'r+')
-                                meta_ok = (
-                                        ds.width == profile['width'] and
-                                        ds.height == profile['height'] and
-                                        ds.count == profile['count'] and
-                                        ds.dtypes[0] == np.dtype(profile['dtype']).name and
-                                        (ds.crs == profile['crs']) and
-                                        (ds.transform == profile['transform'])
-                                )
-                                if not meta_ok:
-                                    ds.close()
-                                    os.remove(out_path)
-                                    ds = rio.open(out_path, 'w', **profile)
-                            else:
-
-                                ds = rio.open(out_path, 'w', **profile)
+                                with rio.open(out_path, 'r') as ds_check:
+                                    meta_ok = (
+                                        ds_check.width == profile['width'] and
+                                        ds_check.height == profile['height'] and
+                                        ds_check.count == profile['count'] and
+                                        ds_check.dtypes[0] == np.dtype(profile['dtype']).name and
+                                        ds_check.crs == profile['crs'] and
+                                        ds_check.transform == profile['transform']
+                                    )
+                                    
+                            if os.path.exists(out_path):
+                                print(f"Recreating existing file: {out_path}", flush=True)
+                                os.remove(out_path)
+                            
+                            ds = rio.open(out_path, 'w', **profile)
+                                
                             out_datasets[metric] = ds
                             metric_valid_counts[metric] = 0
 
                         ds = out_datasets[metric]
 
-                        # compute the raster window
                         y_slice, x_slice = self.chunk_slices[chunk_idx]
                         row_off = y_slice.start
                         col_off = x_slice.start
@@ -921,20 +874,17 @@ class ChunkedTimeSeriesReaderStreaming:
                         window = Window(col_off, row_off, width, height)
                         write_arr = arr.astype('float32')
 
-                        # replace NaN with profile nodata sentinel so downstream tools see nodata
+    
                         nod = ds.profile.get('nodata', None)
                         if nod is not None and np.isnan(nod) is False:
                             if np.isnan(write_arr).any():
                                 write_arr = np.where(np.isnan(write_arr), nod, write_arr)
 
-                        # Ensure dtype matches profile and NaNs are preserved for float
                         if write_arr.shape != (height, width):
                             raise RuntimeError(f"write array shape {write_arr.shape} != window {(height, width)}")
 
                         # Write into the file (single band)
                         ds.write(write_arr, 1, window=window)
-
-                        # Update valid count
                         metric_valid_counts[metric] += np.sum(~np.isnan(write_arr))
 
                     del chunk_results
