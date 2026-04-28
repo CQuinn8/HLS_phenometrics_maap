@@ -64,7 +64,7 @@ cmd_download=(
     "$next_year-12-31" 
     "${INPUT_DIR}"
 )
-UV_PROJECT_download="${basedir}" "${cmd_download[@]}"
+UV_PROJECT="${basedir}" "${cmd_download[@]}"
 
 
 log "Stage 2: EVI2 calculations"
@@ -75,7 +75,7 @@ cmd_calculate_evi=(
     --outdir=$INPUT_DIR
     --n_workers=$(( $(nproc)/2 - 1 ))
 )
-UV_PROJECT_calculate_evi="${basedir}" "${cmd_calculate_evi[@]}"
+UV_PROJECT="${basedir}" "${cmd_calculate_evi[@]}"
 
 
 log "Stage 3: Calculating phenometrics"
