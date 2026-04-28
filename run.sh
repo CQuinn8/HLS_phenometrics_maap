@@ -44,6 +44,9 @@ log() {
     aws s3 cp "$LOG_FILE" "$S3_LOG" 2>/dev/null &
 }
 
+log "Checking credentials..."
+[ -f /home/ops/.netrc ] && log "netrc: OK" || log "WARNING: .netrc not mounted"
+
 log "===== Pipeline Started ====="
 log "Tile:       $tile"
 log "Year:       $target_year"

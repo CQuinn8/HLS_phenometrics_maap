@@ -16,14 +16,11 @@ inputs:
     description: e.g. 2020
     name: target_year
     required: true
-  # - default: ''
-  #   description: MAAP path where EVI2 or HLS scenes already exist
-  #   name: data_dir
-  #   required: false
-  # - default: "output"
-  #   description: Location to write HLS scenes, EVI, and phemotrics
-  #   name: output_dir
-  #   required: true
 queue: maap-dps-worker-64gb
 repository_url: https://github.com/CQuinn8/HLS_phenometrics_maap
 run_command: HLS_phenometrics_maap/run.sh
+imported_worker_files:
+  $HOME/.netrc: /home/ops/.netrc
+  /tmp:
+    - /tmp
+    - rw
