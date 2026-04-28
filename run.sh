@@ -62,15 +62,25 @@ prev_year=$(( target_year - 1 ))
 next_year=$(( target_year + 1 ))
 
 log "Stage 1: HLS download"
-cmd_download=(
-    uv run --no-dev "${basedir}/getHLS.sh"
-    $tile 
-    "$prev_year-01-01" 
-    "$next_year-12-31" 
-    "${INPUT_DIR}"
-)
-HOME=/home/ops UV_PROJECT="${basedir}" "${cmd_download[@]}"
+# cmd_download=(
+#     uv run --no-dev "${basedir}/getHLS.sh"
+#     $tile 
+#     "$prev_year-01-01" 
+#     "$next_year-12-31" 
+#     "${INPUT_DIR}"
+# )
 
+# HOME=/home/ops UV_PROJECT="${basedir}" "${cmd_download[@]}"
+cmd_donwload=(
+    uv run --no-dev "${basedir}/download_hls.py"
+    --tile=$tile 
+    --start_date="$prev_year-01-01" 
+    --end_date="$next_year-12-31" 
+    --output_dir="${OUTPUT_DIR}"
+    --scene_only=True 
+    --mask_water=True
+)
+UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
 
 log "Stage 2: EVI2 calculations"
 cmd_calculate_evi=(
