@@ -3,6 +3,7 @@ __pycache__
 .python-version
 
 # miscellaneous dirs
-temp_out/
 input/
 old_build/
+temp_out*
+output

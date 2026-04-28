@@ -12,11 +12,18 @@ if [[ $# -ne 2 ]]; then
     exit 1
 fi
 
-N_WORKERS=$(( $(nproc) - 1 ))
+# default worker = 32vCPUs but I/O issues when nCPU is 31
+NPROC=$(nproc)
+if [[ $NPROC -le 8 ]]; then
+    N_WORKERS=$(( NPROC - 1 ))
+else
+    N_WORKERS=$(( NPROC * 3 / 4 )) 
+fi
+echo "vCPUs: $NPROC  Workers: $N_WORKERS"
+ 
 tile="$1"
 target_year="$2"
-# download_only=True/False
-chunk_size=2000
+chunk_size=1230
 
 OUTPUT_DIR=output
 INPUT_DIR=input
@@ -45,30 +52,22 @@ log "Output dir: $OUTPUT_DIR"
 log "Basedir:    $basedir"
 
 # 1a. Download HLS Scenes and compute EVI2
-log "Stage 1a: HLS download"
 # take target_year and generate start/end dates +/- 1 year, check for boundaries 
 prev_year=$(( target_year - 1 ))
 next_year=$(( target_year + 1 ))
-# cmd_donwload=(
-#     uv run --no-dev "${basedir}/download_hls.py"
-#     --tile=$tile 
-#     --start_date="2020-01-01" 
-#     --end_date="2020-12-31" 
-#     --output_dir="${OUTPUT_DIR}"
-#     --scene_only=True 
-#     --mask_water=True
-# )
-# UV_PROJECT_download="${basedir}" "${cmd_donwload[@]}"
-# cmd_donwload=(
-#     uv run --no-dev "${basedir}/getHLS.sh"
-#     $tile 
-#     "$prev_year-01-01" 
-#     "$next_year-12-31" 
-#     "${INPUT_DIR}"
-# )
-# UV_PROJECT_download="${basedir}" "${cmd_donwload[@]}"
 
-log "Stage 1b: EVI2 calculations"
+log "Stage 1: HLS download"
+cmd_download=(
+    uv run --no-dev "${basedir}/getHLS.sh"
+    $tile 
+    "$prev_year-01-01" 
+    "$next_year-12-31" 
+    "${INPUT_DIR}"
+)
+UV_PROJECT_download="${basedir}" "${cmd_download[@]}"
+
+
+log "Stage 2: EVI2 calculations"
 cmd_calculate_evi=(
     uv run --no-dev "${basedir}/calculate_evi.py"
     --tile=$tile 
@@ -78,38 +77,8 @@ cmd_calculate_evi=(
 )
 UV_PROJECT_calculate_evi="${basedir}" "${cmd_calculate_evi[@]}"
 
-# 1b. Localize test data and run phenometrics
-#log "Stage 1b: Localizing input data"
-# DATA_TEST_DIR="s3://maap-ops-workspace/shared/colinquinn/hls/testing/daily/"
 
-# if [[ "$DATA_TEST_DIR" == s3://* ]]; then
-#     S3_FILE_COUNT=$(aws s3 ls "$DATA_TEST_DIR" --recursive | wc -l)
-#     log "Files at S3 source: $S3_FILE_COUNT"
-
-#     if [[ "$S3_FILE_COUNT" -eq 0 ]]; then
-#         log "ERROR: No files found at $DATA_TEST_DIR"
-#         exit 1
-#     fi
-
-#     aws s3 sync "$DATA_TEST_DIR" "$INPUT_DIR" --no-progress 2>&1
-#     SYNC_EXIT=$?
-
-#     if [[ $SYNC_EXIT -ne 0 ]]; then
-#         log "ERROR: S3 sync failed with exit code $SYNC_EXIT"
-#         exit 1
-#     fi
-
-#     LOCAL_FILE_COUNT=$(find "$INPUT_DIR" -type f | wc -l)
-#     log "Files localized: $LOCAL_FILE_COUNT"
-
-#     if [[ "$LOCAL_FILE_COUNT" -eq 0 ]]; then
-#         log "ERROR: No files found after sync"
-#         exit 1
-#     fi
-# fi
-
-log "Stage 2: Calculating phenometrics"
-    
+log "Stage 3: Calculating phenometrics"
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
     --data_dir="${INPUT_DIR}"
@@ -118,7 +87,7 @@ cmd=(
     --target_year="${target_year}"
     --context_months=12
     --chunk_size="${chunk_size}"
-    --n_workers=$N_WORKERS
+    --n_workers=20 #$N_WORKERS
 )
 
 UV_PROJECT="${basedir}" "${cmd[@]}"

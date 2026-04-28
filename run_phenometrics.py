@@ -56,8 +56,6 @@ def parse_args() -> argparse.Namespace:
                    help="MGRS tile ID (e.g. 18SUJ).")
     p.add_argument("--target_year",      required=True,  type=int,
                    help="Year to process.")
-    p.add_argument("--skip_phenometrics", action="store_true",
-                   help="Skip phenometrics (useful to test only the upstream steps).")
     
     # -------------------------------------------------------------------------
     # OPTIONAL ARGS SET WITH DEFAULTS
@@ -88,40 +86,27 @@ def run_phenometrics(
     output_path: Path,
     tile: str,
     target_year: int,
-    cadence: str = "10day",
     context_months: int = 12,
     roi_file: Path | None = None,
     tile_epsg: int = None,
     chunk_size: int = 600,
     chunks_in_memory: int = 10,
     run_label: str | None = None,    
-    skip_phenometrics: bool = False,
     n_workers: int = 1,
 ) -> dict:
     """
     Full pipeline: phenometrics
     """
 
-    use_doy_files = (cadence == "10day")
-    is_monthly    = (cadence == "monthly")
-
     # Output directory
-    out_subdir = f"{tile}_{cadence}"
+    out_subdir = f"{tile}"
     if run_label:
         out_subdir = f"{out_subdir}-{run_label}"
     if roi_file is not None:
         out_subdir = f"{out_subdir}-{roi_file.parent.name}"
 
     output_dir = output_path / out_subdir / str(target_year)
-
-    if not skip_phenometrics:
-        output_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        print("No processing requested")
-
-    if skip_phenometrics:
-        print("  [Phenometrics] Skipped via --skip_phenometrics.")
-        return {}
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
     print(f"  Tile         : {tile}")
@@ -132,8 +117,7 @@ def run_phenometrics(
 
     data_config = ProcessingConfig(
         base_path=Path(data_dir),
-        tile_id=tile,
-        # cadence=cadence,
+        tile_id=tile
     )
     scenes = build_scene_index(data_config)
     available_years = sorted({s.year for s in scenes})
@@ -144,17 +128,16 @@ def run_phenometrics(
         )
 
     roi_reproj = None
-    # if roi_file is not None:
-    #     roi = gpd.read_file(roi_file)
-    #     roi_reproj = roi.to_crs(f"EPSG:{tile_epsg}")
-    #     print(f"  ROI loaded & reprojected to EPSG:{tile_epsg}")
+    if roi_file is not None:
+        roi = gpd.read_file(roi_file)
+        roi_reproj = roi.to_crs(f"EPSG:{tile_epsg}")
+        print(f"  ROI loaded & reprojected to EPSG:{tile_epsg}")
 
     reader = ChunkedTimeSeriesReaderStreaming(
         scenes,
         chunk_size=(chunk_size, chunk_size),
         roi=roi_reproj,
         duplicate_handling="mean",
-        use_doy_files=use_doy_files,
         output_dir=output_dir,
         context_months=context_months,
         target_year=target_year,
@@ -163,16 +146,13 @@ def run_phenometrics(
 
     configured_pipeline = partial(
         full_pipeline_chunk,
-        apply_threshold=True,
-        is_monthly=is_monthly,
+        apply_threshold=True
     )
 
     reader.enter_processing_stage(
         process_fn=configured_pipeline,
         chunks_in_memory=chunks_in_memory,
-        context_months=context_months,
-        skip_timeseries=True,
-        skip_pixel_processing=False,        
+        context_months=context_months,    
         n_workers = n_workers,
     )
 
@@ -194,10 +174,8 @@ if __name__ == "__main__":
         chunk_size        = args.chunk_size,
         chunks_in_memory  = args.chunks_in_memory,
         run_label         = args.run_label,
-        skip_phenometrics = args.skip_phenometrics,
         n_workers = args.n_workers,
     )
-
-    #  python run_phenometrics.py --data_dir="~/Library/CloudStorage/OneDrive-NASA/NASA/HLS/data/" --output_path="~/Library/CloudStorage/OneDrive-NASA/NASA/HLS/results/" --tile=18SUJ --target_year=2020 --cadence=10day --skip_download --skip_evi --context_months=12
-
-    # python run_phenometrics.py --data_dir="/projects/my-public-bucket/hls/testing/10day-subset-SERC/" --output_path="/projects/my-public-bucket/hls/testing/operational_phenometrics/10day_subset_SERC/" --tile=18SUJ --target_year=2020 --skip_download --skip_evi --context_months=12 --chunk_size=100
+    # python run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily-subset-SERC/ --output_path=temp_out --tile=18SUJ --target_year=2020 --chunk_size=10 --n_workers=2
+    
+    ## python run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily/ --output_path=temp_out --tile=18SUJ --target_year=2020 --chunk_size=500 --n_workers=6 --roi_file="/projects/my-public-bucket/hls/testing/ROIs/MD_transect/POLYGON.shp"

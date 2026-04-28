@@ -22,222 +22,8 @@ warnings.filterwarnings('ignore', message='invalid value encountered in cast')
 from phenometrics_utils import *
 
 from scipy.interpolate import LSQUnivariateSpline
-#
-# def smooth_evi_chunk_for_year(
-#         chunk: xr.DataArray,
-#         target_year: int,
-#         context_months: int = 12,
-#         min_valid_points: int = 10 * 3,
-#         fill_low_data: str = "nan",
-#         value_min: float = -1.0,
-#         value_max: float = 1.0,
-#         daily_output: bool = True,
-#         doy_data: xr.DataArray = None,
-#         composite_start_doys: np.ndarray = None,
-#         testing_mode: bool = False
-# ) -> xr.DataArray:
-#     """
-#     Fit pixel-wise smoothing spline over a ±context window around target_year,
-#     then return only the smoothed values for target_year.
-#     """
-#     t_start = timer.time()
-#
-#     # Define fitting window +/- 12 months default
-#     fit_start = pd.Timestamp(f"{target_year}-01-01") - pd.DateOffset(months=context_months)
-#     fit_end = pd.Timestamp(f"{target_year}-12-31") + pd.DateOffset(months=context_months)
-#
-#     # Subset to fitting window
-#     fit_chunk = chunk.sel(time=slice(fit_start, fit_end))
-#
-#     if fit_chunk.sizes["time"] == 0:
-#         raise ValueError(f"No data found in fitting window {fit_start} to {fit_end}")
-#
-#     # Filter/prep DOY data for composites
-#     fit_doy = None
-#     fit_comp_start = None
-#     use_pixel_doy = doy_data is not None and composite_start_doys is not None
-#     if use_pixel_doy:
-#         fit_doy = doy_data.sel(time=slice(fit_start, fit_end))
-#
-#         time_mask = ((chunk.time >= fit_start) & (chunk.time <= fit_end)).values
-#         fit_comp_start = composite_start_doys[time_mask]
-#
-#         if len(fit_comp_start) != len(fit_chunk.time):
-#             print(f"  Warning: comp_start length {len(fit_comp_start)} vs chunk {len(fit_chunk.time)}")
-#             fit_comp_start = fit_comp_start[:len(fit_chunk.time)]
-#
-#     valid_timesteps = np.any(np.isfinite(fit_chunk.values), axis=(1, 2))
-#     n_all_nan = (~valid_timesteps).sum()
-#     if n_all_nan > 0:
-#         mask = valid_timesteps.values if hasattr(valid_timesteps, 'values') else valid_timesteps
-#         fit_chunk = fit_chunk.isel(time=mask)
-#         if use_pixel_doy:
-#             fit_doy = fit_doy.isel(time=mask)
-#             fit_comp_start = fit_comp_start[mask]
-#
-#     ref_date = np.datetime64(f"{target_year - 1}-01-01")
-#     ref_year = target_year - 1
-#     t_nominal = (fit_chunk.time.values - ref_date) / np.timedelta64(1, "D")
-#     t_nominal = t_nominal.astype(float)
-#
-#     if use_pixel_doy:
-#         fit_years = fit_chunk.time.dt.year.values
-#         fit_doy_values = fit_doy.values
-#
-#         pixel_time_data = np.zeros_like(fit_doy_values, dtype=np.float64)
-#         for t_idx in range(len(fit_chunk.time)):
-#             year = fit_years[t_idx]
-#             comp_start = fit_comp_start[t_idx]
-#             year_offset = (year - ref_year) * 365
-#             pixel_time_data[t_idx] = year_offset + comp_start + fit_doy_values[t_idx]
-#     else:
-#         pixel_time_data = None
-#
-#     if testing_mode:
-#         daily_dates = pd.date_range(fit_start, fit_end)
-#     else:
-#         daily_dates = pd.date_range(f"{target_year}-01-01", f"{target_year}-12-31")
-#
-#     t_daily = (daily_dates.values - ref_date) / np.timedelta64(1, "D")
-#     t_daily = t_daily.astype(float)
-#     n_output = len(daily_dates)
-#
-#     target_center = (np.datetime64(f"{target_year}-07-01") - ref_date) / np.timedelta64(1, "D")
-#     days_from_center = np.abs(t_nominal - target_center)
-#     decay_rate = 0.25
-#     weights_template = np.exp(-decay_rate * days_from_center / 365)
-#     weights_template = weights_template * 0.85 + 0.15
-#
-#     ny, nx = fit_chunk.shape[1], fit_chunk.shape[2]
-#     n_pixels = ny * nx
-#     smoothed_data = np.full((n_output, ny, nx), np.nan, dtype=np.float32)
-#
-#     # Pre-extract numpy arrays to avoid xarray overhead in loop
-#     evi_values = fit_chunk.values
-#
-#     # Track progress
-#     pixel_count = 0
-#     n_fitted = 0
-#     n_skipped = 0
-#     t_loop_start = timer.time()
-#
-#     for yi in range(ny):
-#         for xi in range(nx):
-#             pixel_count += 1
-#
-#             ts = evi_values[:, yi, xi]
-#             valid = np.isfinite(ts)
-#             n_valid = valid.sum()
-#
-#             if n_valid < min_valid_points:
-#                 n_skipped += 1
-#                 if fill_low_data == "mean" and n_valid > 0:
-#                     smoothed_data[:, yi, xi] = np.nanmean(ts[valid])
-#                 continue
-#
-#             # Get time axis for THIS pixel
-#             if use_pixel_doy and pixel_time_data is not None:
-#                 t_pixel = pixel_time_data[:, yi, xi]
-#             else:
-#                 t_pixel = t_nominal
-#
-#             x_valid = t_pixel[valid]
-#             y_valid = ts[valid].astype(np.float64)
-#             weights_valid = weights_template[valid].copy()
-#
-#             # Skip sort if already monotonic
-#             diffs = np.diff(x_valid)
-#             if not np.all(diffs > 0):
-#                 sort_idx = np.argsort(x_valid)
-#                 x_valid = x_valid[sort_idx]
-#                 y_valid = y_valid[sort_idx]
-#                 weights_valid = weights_valid[sort_idx]
-#
-#                 unique_mask = np.concatenate([[True], np.diff(x_valid) > 0])
-#                 x_valid = x_valid[unique_mask]
-#                 y_valid = y_valid[unique_mask]
-#                 weights_valid = weights_valid[unique_mask]
-#
-#             if len(x_valid) < min_valid_points:
-#                 n_skipped += 1
-#                 continue
-#
-#             try:
-#                 k = 5
-#                 n_xu = len(x_valid)
-#                 max_knots = n_xu - k - 1
-#                 n_knots_target = max(n_xu // 3, 12)
-#                 n_knots = min(n_knots_target, max_knots)
-#
-#                 y_min = np.min(y_valid)
-#                 y_max = np.max(y_valid)
-#                 y_range = y_max - y_min
-#
-#                 if y_range > 0.1:
-#                     low_threshold = y_min + 0.20 * y_range
-#                     high_threshold = y_min + 0.80 * y_range
-#                     weights_valid[y_valid < low_threshold] *= 2
-#                     weights_valid[y_valid > high_threshold] *= 2
-#
-#                 percentiles = np.linspace(10, 90, n_knots)
-#                 interior_knots = np.percentile(x_valid, percentiles)
-#                 interior_knots = np.unique(interior_knots)
-#                 interior_knots = interior_knots[(interior_knots > x_valid[0]) &
-#                                                 (interior_knots < x_valid[-1])]
-#
-#                 if len(interior_knots) < 3:
-#                     n_skipped += 1
-#                     continue
-#
-#                 spline = LSQUnivariateSpline(
-#                     x_valid,
-#                     y_valid,
-#                     interior_knots,
-#                     w=weights_valid,
-#                     k=k
-#                 )
-#
-#                 out = spline(t_daily)
-#                 out = np.clip(out, value_min, value_max)
-#                 smoothed_data[:, yi, xi] = out
-#                 n_fitted += 1
-#
-#             except Exception:
-#                 if fill_low_data == "mean":
-#                     smoothed_data[:, yi, xi] = np.nanmean(y_valid)
-#
-#         # Progress every 50 rows
-#         if yi % 50 == 0 and yi > 0:
-#             elapsed = timer.time() - t_loop_start
-#             pixels_done = yi * nx
-#             rate = pixels_done / elapsed
-#             remaining = (n_pixels - pixels_done) / rate
-#             print(f"    Row {yi}/{ny} | {pixels_done}/{n_pixels} pixels "
-#                   f"({pixels_done / n_pixels * 100:.0f}%) | "
-#                   f"{rate:.0f} px/s | ETA: {remaining:.0f}s")
-#
-#     t_total = timer.time() - t_start
-#     print(f"  Smoothing complete: {n_fitted} fitted, {n_skipped} skipped "
-#           f"in {t_total:.1f}s ({t_total / max(n_fitted, 1) * 1000:.1f}ms/fitted pixel)")
-#
-#     # Free fitting data
-#     del evi_values
-#     if pixel_time_data is not None:
-#         del pixel_time_data
-#     gc.collect()
-#
-#     # Create output DataArray with daily dates
-#     smoothed = xr.DataArray(
-#         smoothed_data,
-#         dims=['time', 'y', 'x'],
-#         coords={
-#             'time': daily_dates,
-#             'y': fit_chunk.y,
-#             'x': fit_chunk.x
-#         }
-#     )
-#
-#     return smoothed
+
+
 def _precompute_knots(
     x:       np.ndarray,
     n_knots: int,
@@ -315,7 +101,7 @@ def _process_worker_slice(
         for xi in range(nx):
 
             # ----------------------------------------------------------
-            # 1. Extract pixel time series
+            # 1. Extract pixdel time series
             # ----------------------------------------------------------
             ts      = evi_data[:, yi, xi]
             t_pixel = t_nominal if shared_time_axis else time_data[:, yi, xi]
@@ -339,13 +125,13 @@ def _process_worker_slice(
             # 3. Monotonicity check + deduplication
             #    Only sort when necessary — saves ~15% for well-ordered data
             # ----------------------------------------------------------
-            if not np.all(np.diff(x_valid) > 0):
+            if not np.all(np.diff(x_valid) > 1e-6):
                 idx     = np.argsort(x_valid, kind="stable")
                 x_valid = x_valid[idx]
                 y_valid = y_valid[idx]
                 w_valid = w_valid[idx]
                 # Remove duplicate x positions (LSQ requires strictly increasing)
-                keep    = np.concatenate([[True], np.diff(x_valid) > 0])
+                keep    = np.concatenate([[True], np.diff(x_valid) > 1e-6])
                 x_valid = x_valid[keep]
                 y_valid = y_valid[keep]
                 w_valid = w_valid[keep]
@@ -370,13 +156,26 @@ def _process_worker_slice(
             #    Pixel-DOY:   compute fresh from this pixel's x_valid.
             # ----------------------------------------------------------
             if precomputed_knots is not None:
+                # Try shared knots first
                 interior = precomputed_knots[
                     (precomputed_knots > x_valid[0]) &
                     (precomputed_knots < x_valid[-1])
                 ]
+            
+                # Check knot density vs valid observations
+                # If fewer than 3 valid obs per knot interval, recompute per-pixel
+                obs_per_knot = len(x_valid) / max(len(interior), 1)
+                if obs_per_knot < 3 or len(interior) < 3:
+                    # Fall back to per-pixel knots based on actual valid observations
+                    n_xu     = len(x_valid)
+                    n_k      = min(max(n_xu // 5, 6), n_xu - k - 1)
+                    pct      = np.linspace(10, 90, n_k)
+                    interior = np.unique(np.percentile(x_valid, pct))
+                    interior = interior[(interior > x_valid[0]) &
+                                        (interior < x_valid[-1])]
             else:
                 n_xu     = len(x_valid)
-                n_k      = min(max(n_xu // 3, 12), n_xu - k - 1)
+                n_k      = min(max(n_xu // 5, 6), n_xu - k - 1)
                 pct      = np.linspace(10, 90, n_k)
                 interior = np.unique(np.percentile(x_valid, pct))
                 interior = interior[(interior > x_valid[0]) &
@@ -409,14 +208,14 @@ def smooth_evi_chunk_for_year(
     context_months:       int   = 12,
     min_valid_points:     int   = 30,
     min_valid_frac: float = 0.30,
-    fill_low_data:        str   = "nan",
+    fill_low_data:        str   = "nan", # currently no gap filling, Bolton uses the context years to "grab" similar values but that's a weaker method 
     value_min:            float = -1.0,
     value_max:            float = 1.0,
     daily_output:         bool  = True,
     k:                    int   = 5,      # spline degree
-    # --- DOY / composite inputs ---
-    doy_data:             xr.DataArray  = None,
-    composite_start_doys: np.ndarray    = None,
+    # # --- DOY / composite inputs ---
+    # doy_data:             xr.DataArray  = None,
+    # composite_start_doys: np.ndarray    = None,
     # --- runtime ---
     testing_mode:         bool      = False,
     _pool:                Parallel | None = None,  # warm pool from caller
@@ -483,19 +282,19 @@ def smooth_evi_chunk_for_year(
     #    Only active for 10-day composites where actual pixel-level
     #    observation DOYs are available.
     # ----------------------------------------------------------------
-    use_pixel_doy  = doy_data is not None and composite_start_doys is not None
-    fit_doy        = None
-    fit_comp_start = None
+    # use_pixel_doy  = doy_data is not None and composite_start_doys is not None
+    # fit_doy        = None
+    # fit_comp_start = None
 
-    if use_pixel_doy:
-        fit_doy   = doy_data.sel(time=slice(fit_start, fit_end))
-        time_mask = ((chunk.time >= fit_start) & (chunk.time <= fit_end)).values
-        fit_comp_start = composite_start_doys[time_mask]
+    # if use_pixel_doy:
+    #     fit_doy   = doy_data.sel(time=slice(fit_start, fit_end))
+    #     time_mask = ((chunk.time >= fit_start) & (chunk.time <= fit_end)).values
+    #     fit_comp_start = composite_start_doys[time_mask]
 
-        if len(fit_comp_start) != fit_chunk.sizes["time"]:
-            print(f"  Warning: comp_start length {len(fit_comp_start)} "
-                  f"!= chunk time {fit_chunk.sizes['time']} — truncating")
-            fit_comp_start = fit_comp_start[:fit_chunk.sizes["time"]]
+    #     if len(fit_comp_start) != fit_chunk.sizes["time"]:
+    #         print(f"  Warning: comp_start length {len(fit_comp_start)} "
+    #               f"!= chunk time {fit_chunk.sizes['time']} — truncating")
+    #         fit_comp_start = fit_comp_start[:fit_chunk.sizes["time"]]
 
     # ----------------------------------------------------------------
     # 3. Drop entirely-NaN timesteps
@@ -504,9 +303,9 @@ def smooth_evi_chunk_for_year(
     n_dropped = int((~valid_ts).sum())
     if n_dropped > 0:
         fit_chunk = fit_chunk.isel(time=valid_ts)
-        if use_pixel_doy:
-            fit_doy        = fit_doy.isel(time=valid_ts)
-            fit_comp_start = fit_comp_start[valid_ts]
+        # if use_pixel_doy:
+        #     fit_doy        = fit_doy.isel(time=valid_ts)
+        #     fit_comp_start = fit_comp_start[valid_ts]
 
     n_times, ny, nx = fit_chunk.shape
     n_pixels        = ny * nx
@@ -550,20 +349,20 @@ def smooth_evi_chunk_for_year(
     #    Each pixel gets its own time axis derived from actual observation
     #    DOYs within each composite window.
     # ----------------------------------------------------------------
-    if use_pixel_doy:
-        fit_years       = fit_chunk.time.dt.year.values   # (n_times,)
-        fit_doy_values  = fit_doy.values                  # (n_times, ny, nx)
-        pixel_time_data = np.zeros((n_times, ny, nx), dtype=np.float64)
+    # if use_pixel_doy:
+    #     fit_years       = fit_chunk.time.dt.year.values   # (n_times,)
+    #     fit_doy_values  = fit_doy.values                  # (n_times, ny, nx)
+    #     pixel_time_data = np.zeros((n_times, ny, nx), dtype=np.float64)
 
-        for t_idx in range(n_times):
-            yr_off = (fit_years[t_idx] - ref_year) * 365
-            pixel_time_data[t_idx] = (yr_off
-                                      + fit_comp_start[t_idx]
-                                      + fit_doy_values[t_idx])
-        shared_time_axis = False
-    else:
-        pixel_time_data  = None
-        shared_time_axis = True
+    #     for t_idx in range(n_times):
+    #         yr_off = (fit_years[t_idx] - ref_year) * 365
+    #         pixel_time_data[t_idx] = (yr_off
+    #                                   + fit_comp_start[t_idx]
+    #                                   + fit_doy_values[t_idx])
+    #     shared_time_axis = False
+    # else:
+    pixel_time_data  = None
+    shared_time_axis = True
 
     # ----------------------------------------------------------------
     # 6. Output time axis
@@ -575,7 +374,10 @@ def smooth_evi_chunk_for_year(
     t_daily  = ((daily_dates.values - ref_date)
                 / np.timedelta64(1, "D")).astype(np.float64)
     n_output = len(daily_dates)
-
+    t_daily = np.clip(t_daily, t_nominal[0], t_nominal[-1])
+    print(f"t_nominal: {t_nominal[0]:.1f} - {t_nominal[-1]:.1f}", flush=True)
+    print(f"t_daily:   {t_daily[0]:.1f}  - {t_daily[-1]:.1f}", flush=True)
+    print(f"overlap:   {t_daily[0] >= t_nominal[0]} to {t_daily[-1] <= t_nominal[-1]}", flush=True)
     # ----------------------------------------------------------------
     # 7. Gaussian-decay weight template
     #    Observations near the centre of target_year get full weight;
@@ -609,7 +411,7 @@ def smooth_evi_chunk_for_year(
 
     print(f"  Workers   : {n_workers} processes | "
           f"Output: {n_output} days")
-
+    
     # ----------------------------------------------------------------
     # 9. Write memmap temp files
     #    Parent writes once → workers read zero-copy via OS page mapping.
@@ -723,8 +525,8 @@ def apply_thresholds_chunk(chunk: xr.DataArray,
 # per Bolton et al., 2020 eq.3 pg4
 def despike_timeseries_chunk(
         chunk: xr.DataArray,
-        doy_data: xr.DataArray = None,
-        composite_start_doys: np.ndarray = None,
+        # doy_data: xr.DataArray = None,
+        # composite_start_doys: np.ndarray = None,
         max_gap_days: int = 45,
         abs_threshold: float = 0.1,
         rel_threshold: float = 2.0,
@@ -750,142 +552,142 @@ def despike_timeseries_chunk(
     chunk_values = chunk.values  # (time, y, x)
 
     # Build per-pixel actual DOY array if available
-    if doy_data is not None and composite_start_doys is not None:
-        # actual_doy[t, y, x] = composite_start_doy[t] + pixel_offset[t, y, x]
-        actual_doy = np.full_like(chunk_values, np.nan, dtype=np.float32)
-        for t in range(n_times):
-            actual_doy[t, :, :] = composite_start_doys[t] + doy_data.values[t, :, :]
-        use_pixel_doy = True
-    else:
-        # Fallback: nominal time coordinate (same for all pixels)
-        times = pd.to_datetime(chunk.time.values)
-        nominal_days = (times - times[0]).days.astype(np.float32)
-        use_pixel_doy = False
+    # if doy_data is not None and composite_start_doys is not None:
+    #     # actual_doy[t, y, x] = composite_start_doy[t] + pixel_offset[t, y, x]
+    #     actual_doy = np.full_like(chunk_values, np.nan, dtype=np.float32)
+    #     for t in range(n_times):
+    #         actual_doy[t, :, :] = composite_start_doys[t] + doy_data.values[t, :, :]
+    #     use_pixel_doy = True
+    # else:
+    # Fallback: nominal time coordinate (same for all pixels)
+    times = pd.to_datetime(chunk.time.values)
+    nominal_days = (times - times[0]).days.astype(np.float32)
+    use_pixel_doy = False
 
     # Spike detection
     spike_mask = np.zeros_like(chunk_values, dtype=bool)
 
-    if use_pixel_doy:
-        # ----------------------------------------------------------
-        # Per-pixel DOY path: gaps differ across pixels
-        # ----------------------------------------------------------
-        # For each time step t (interior points: 1..n_times-2):
-        #   pre  = actual_doy[t-1]
-        #   curr = actual_doy[t]
-        #   post = actual_doy[t+1]
-        #   gap  = post - pre   (per pixel)
+    # if use_pixel_doy:
+    #     # ----------------------------------------------------------
+    #     # Per-pixel DOY path: gaps differ across pixels
+    #     # ----------------------------------------------------------
+    #     # For each time step t (interior points: 1..n_times-2):
+    #     #   pre  = actual_doy[t-1]
+    #     #   curr = actual_doy[t]
+    #     #   post = actual_doy[t+1]
+    #     #   gap  = post - pre   (per pixel)
 
-        for t in range(1, n_times - 1):
-            evi_pre = chunk_values[t - 1]
-            evi_curr = chunk_values[t]
-            evi_post = chunk_values[t + 1]
+    #     for t in range(1, n_times - 1):
+    #         evi_pre = chunk_values[t - 1]
+    #         evi_curr = chunk_values[t]
+    #         evi_post = chunk_values[t + 1]
 
-            doy_pre = actual_doy[t - 1]
-            doy_curr = actual_doy[t]
-            doy_post = actual_doy[t + 1]
+    #         doy_pre = actual_doy[t - 1]
+    #         doy_curr = actual_doy[t]
+    #         doy_post = actual_doy[t + 1]
 
-            # Per-pixel gap
-            gap = doy_post - doy_pre
+    #         # Per-pixel gap
+    #         gap = doy_post - doy_pre
 
-            # Interpolation weight
-            denom = doy_post - doy_pre
-            # Avoid divide by zero
-            safe_denom = np.where(np.abs(denom) > 0.001, denom, np.nan)
-            weight = (doy_curr - doy_pre) / safe_denom
+    #         # Interpolation weight
+    #         denom = doy_post - doy_pre
+    #         # Avoid divide by zero
+    #         safe_denom = np.where(np.abs(denom) > 0.001, denom, np.nan)
+    #         weight = (doy_curr - doy_pre) / safe_denom
 
-            # Fitted value
-            evi_fit = evi_pre + (evi_post - evi_pre) * weight
+    #         # Fitted value
+    #         evi_fit = evi_pre + (evi_post - evi_pre) * weight
 
-            # Differences
-            diff = evi_fit - evi_curr
-            abs_diff = np.abs(diff)
+    #         # Differences
+    #         diff = evi_fit - evi_curr
+    #         abs_diff = np.abs(diff)
 
-            amplitude = evi_post - evi_pre
-            safe_amp = np.where(np.abs(amplitude) > 0.001, amplitude, np.nan)
-            rel_diff = np.abs(diff / safe_amp)
+    #         amplitude = evi_post - evi_pre
+    #         safe_amp = np.where(np.abs(amplitude) > 0.001, amplitude, np.nan)
+    #         rel_diff = np.abs(diff / safe_amp)
 
-            # Spike conditions
-            spike_mask[t] = (
-                    (abs_diff > abs_threshold)
-                    & (rel_diff > rel_threshold)
-                    & (gap < max_gap_days)
-                    & (~np.isnan(evi_pre))
-                    & (~np.isnan(evi_curr))
-                    & (~np.isnan(evi_post))
-                    & (~np.isnan(doy_pre))
-                    & (~np.isnan(doy_post))
-            )
+    #         # Spike conditions
+    #         spike_mask[t] = (
+    #                 (abs_diff > abs_threshold)
+    #                 & (rel_diff > rel_threshold)
+    #                 & (gap < max_gap_days)
+    #                 & (~np.isnan(evi_pre))
+    #                 & (~np.isnan(evi_curr))
+    #                 & (~np.isnan(evi_post))
+    #                 & (~np.isnan(doy_pre))
+    #                 & (~np.isnan(doy_post))
+    #         )
 
-        # Edge handling
-        if handle_edges and n_times >= 2:
-            # First observation
-            gap_first = actual_doy[1] - actual_doy[0]
+    #     # Edge handling
+    #     if handle_edges and n_times >= 2:
+    #         # First observation
+    #         gap_first = actual_doy[1] - actual_doy[0]
+    #         diff_first = np.abs(chunk_values[0] - chunk_values[1])
+    #         spike_mask[0] = (
+    #                 (diff_first > abs_threshold * 1.5)
+    #                 & (gap_first < max_gap_days)
+    #                 & (~np.isnan(chunk_values[0]))
+    #                 & (~np.isnan(chunk_values[1]))
+    #                 & (~np.isnan(gap_first))
+    #         )
+
+    #         # Last observation
+    #         gap_last = actual_doy[-1] - actual_doy[-2]
+    #         diff_last = np.abs(chunk_values[-1] - chunk_values[-2])
+    #         spike_mask[-1] = (
+    #                 (diff_last > abs_threshold * 1.5)
+    #                 & (gap_last < max_gap_days)
+    #                 & (~np.isnan(chunk_values[-1]))
+    #                 & (~np.isnan(chunk_values[-2]))
+    #                 & (~np.isnan(gap_last))
+    #         )
+
+    # else:
+    # nominal time gaps (same for all pixels when DOY.tif is NaN)
+    time_days_da = xr.DataArray(nominal_days, dims=['time'],
+                                coords={'time': chunk.time})
+
+    evi_pre = chunk.shift(time=1)
+    evi_post = chunk.shift(time=-1)
+    time_pre = time_days_da.shift(time=1)
+    time_post = time_days_da.shift(time=-1)
+
+    gap = time_post - time_pre
+    weight = (time_days_da - time_pre) / (time_post - time_pre)
+    evi_fit = evi_pre + (evi_post - evi_pre) * weight
+
+    amplitude = evi_post - evi_pre
+    diff = evi_fit - chunk
+    abs_diff = np.abs(diff)
+    rel_diff = np.abs(diff / amplitude.where(np.abs(amplitude) > 0.001))
+
+    spike_da = (
+            (abs_diff > abs_threshold)
+            & (rel_diff > rel_threshold)
+            & (gap < max_gap_days)
+            & (~evi_pre.isnull())
+            & (~evi_post.isnull())
+    )
+    spike_mask = spike_da.values
+
+    if handle_edges and n_times >= 2:
+        t_gap_first = nominal_days[1] - nominal_days[0]
+        if t_gap_first < max_gap_days:
             diff_first = np.abs(chunk_values[0] - chunk_values[1])
             spike_mask[0] = (
                     (diff_first > abs_threshold * 1.5)
-                    & (gap_first < max_gap_days)
                     & (~np.isnan(chunk_values[0]))
                     & (~np.isnan(chunk_values[1]))
-                    & (~np.isnan(gap_first))
             )
 
-            # Last observation
-            gap_last = actual_doy[-1] - actual_doy[-2]
+        t_gap_last = nominal_days[-1] - nominal_days[-2]
+        if t_gap_last < max_gap_days:
             diff_last = np.abs(chunk_values[-1] - chunk_values[-2])
             spike_mask[-1] = (
                     (diff_last > abs_threshold * 1.5)
-                    & (gap_last < max_gap_days)
                     & (~np.isnan(chunk_values[-1]))
                     & (~np.isnan(chunk_values[-2]))
-                    & (~np.isnan(gap_last))
             )
-
-    else:
-        # nominal time gaps (same for all pixels when DOY.tif is NaN)
-        time_days_da = xr.DataArray(nominal_days, dims=['time'],
-                                    coords={'time': chunk.time})
-
-        evi_pre = chunk.shift(time=1)
-        evi_post = chunk.shift(time=-1)
-        time_pre = time_days_da.shift(time=1)
-        time_post = time_days_da.shift(time=-1)
-
-        gap = time_post - time_pre
-        weight = (time_days_da - time_pre) / (time_post - time_pre)
-        evi_fit = evi_pre + (evi_post - evi_pre) * weight
-
-        amplitude = evi_post - evi_pre
-        diff = evi_fit - chunk
-        abs_diff = np.abs(diff)
-        rel_diff = np.abs(diff / amplitude.where(np.abs(amplitude) > 0.001))
-
-        spike_da = (
-                (abs_diff > abs_threshold)
-                & (rel_diff > rel_threshold)
-                & (gap < max_gap_days)
-                & (~evi_pre.isnull())
-                & (~evi_post.isnull())
-        )
-        spike_mask = spike_da.values
-
-        if handle_edges and n_times >= 2:
-            t_gap_first = nominal_days[1] - nominal_days[0]
-            if t_gap_first < max_gap_days:
-                diff_first = np.abs(chunk_values[0] - chunk_values[1])
-                spike_mask[0] = (
-                        (diff_first > abs_threshold * 1.5)
-                        & (~np.isnan(chunk_values[0]))
-                        & (~np.isnan(chunk_values[1]))
-                )
-
-            t_gap_last = nominal_days[-1] - nominal_days[-2]
-            if t_gap_last < max_gap_days:
-                diff_last = np.abs(chunk_values[-1] - chunk_values[-2])
-                spike_mask[-1] = (
-                        (diff_last > abs_threshold * 1.5)
-                        & (~np.isnan(chunk_values[-1]))
-                        & (~np.isnan(chunk_values[-2]))
-                )
 
     chunk_despiked = chunk.where(~spike_mask)
 
@@ -900,11 +702,9 @@ def despike_timeseries_chunk(
 
 
 def annual_phenometrics_chunk(chunk: xr.DataArray,
-                              doy_data: xr.DataArray = None,
                               year: int = None,
                               threshold_greenup_pct: float = 0.15,
-                              is_monthly: bool = False,
-                              composite_start_doys: np.ndarray = None) -> dict[str, np.ndarray]:
+                              is_monthly: bool = False) -> dict[str, np.ndarray]:
     """
     Calculate annual phenometrics for a chunk.
 
@@ -1211,8 +1011,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         # Pass DOY data through so gaps are per-pixel
         chunk = despike_timeseries_chunk(
             chunk,
-            doy_data=doy_data,
-            composite_start_doys=composite_start_doys,
+            #doy_data=doy_data,
+            #composite_start_doys=composite_start_doys,
             max_gap_days=despike_max_gap,
             abs_threshold=despike_abs_threshold,
             rel_threshold=despike_rel_threshold,
@@ -1225,8 +1025,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     smoothed_daily = smooth_evi_chunk_for_year(
         chunk,
         target_year,
-        doy_data=doy_data,
-        composite_start_doys=composite_start_doys,
+        #doy_data=doy_data,
+        #composite_start_doys=composite_start_doys,
         testing_mode=testing_mode,
         _pool=_pool,
         n_jobs=n_jobs
@@ -1245,11 +1045,9 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     # print(f"Years in data: {sorted(set(smoothed_year.time.dt.year.values))}")
     pheno = annual_phenometrics_chunk(
         smoothed_year,
-        doy_data=None,
         threshold_greenup_pct=threshold_greenup_pct,
         is_monthly=is_monthly,
         year=target_year,
-        composite_start_doys=None
     )
 
     # Map internal names to output names
@@ -1287,4 +1085,5 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             'post_spline': chunk_post_spline,
         }
 
+        
     return results

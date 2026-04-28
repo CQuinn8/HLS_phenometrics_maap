@@ -215,7 +215,7 @@ class ChunkedTimeSeriesReaderStreaming:
             chunk_size: tuple = (128, 128),
             roi=None,
             duplicate_handling: str = 'mean',
-            use_doy_files: bool = True,
+            use_doy_files: bool = False,
             default_crs: str = None,  
             output_dir: Path = None,
             context_months: int = None,
@@ -841,9 +841,7 @@ class ChunkedTimeSeriesReaderStreaming:
                             else:
                                 pass
 
-                            out_path = os.path.join(self.output_dir, f"{metric}.tif")
-                            print(f"Writing metric: {metric} -> {out_path}", flush=True)
-                                            
+                            out_path = os.path.join(self.output_dir, f"{metric}.tif")                                            
                             if os.path.exists(out_path):
                                 with rio.open(out_path, 'r') as ds_check:
                                     meta_ok = (
@@ -873,7 +871,6 @@ class ChunkedTimeSeriesReaderStreaming:
                         width = x_slice.stop - x_slice.start
                         window = Window(col_off, row_off, width, height)
                         write_arr = arr.astype('float32')
-
     
                         nod = ds.profile.get('nodata', None)
                         if nod is not None and np.isnan(nod) is False:
@@ -900,69 +897,27 @@ class ChunkedTimeSeriesReaderStreaming:
             for metric, n_valid in metric_valid_counts.items():
                 print(f"    {metric}: {n_valid} valid pixels")
 
-            # No large year_outputs remained in memory
             gc.collect()
 
     def enter_processing_stage(
             self,
             process_fn=None,
-            chunks_in_memory: int = 16,
-            min_evi: float = -0.2,
-            max_evi: float = 1.0,
             interp_method: str = 'linear',
-            skip_pixel_processing: bool = False,
-            skip_timeseries: bool = False,
+            chunks_in_memory: int = 16,
             context_months: int = 12,
             n_workers: int = 1,
             **process_kwargs,
     ):
-        """
-        pixel_results:   per-pixel annual phenometrics (dict of 2D arrays)
-        """
-        pixel_results = None
-        if not skip_pixel_processing:
-            if process_fn is None:
-                raise ValueError("process_fn required when skip_pixel_processing=False")
-            print("\n" + "=" * 60)
-            print("Processing pixel-wise metrics")
-            print("=" * 60)
-            self.process_all_chunks_yearly(
-                process_fn=process_fn,
-                chunks_in_memory=chunks_in_memory,
-                context_months=context_months,
-                n_workers=n_workers,
-                **process_kwargs,
-            )
-        else:
-            print("  Pixel processing: skipped")
-
-        # return pixel_results
-
-
-# =============================================================================
-# Output helper functions
-# =============================================================================  
-def save_results(
-        pixel_results: Optional[dict],
-        output_dir: Path,
-        y_coords: np.ndarray = None,
-        x_coords: np.ndarray = None,
-        crs=None,
-):
-    """Save pixel GeoTIFFs and/or time series CSVs."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if pixel_results is not None:
-        if y_coords is None or x_coords is None or crs is None:
-            raise ValueError("y_coords, x_coords, crs required for GeoTIFFs")
-        for name, arr in pixel_results.items():
-            da = xr.DataArray(
-                arr[np.newaxis, :, :], dims=["band", "y", "x"],
-                coords={"band": [1], "y": y_coords, "x": x_coords})
-            da = da.rio.write_crs(crs)
-            da.rio.to_raster(output_dir / f"{name}.tif",
-                             driver="GTiff", dtype="float32")
-        print(f"  Saved {len(pixel_results)} GeoTIFFs → {output_dir}")
-    else:
-        print("  Pixel GeoTIFFs: skipped")
+    
+        if process_fn is None:
+            raise ValueError("process_fn required when skip_pixel_processing=False")
+        print("\n" + "=" * 60)
+        print("Processing pixel-wise metrics")
+        print("=" * 60)
+        self.process_all_chunks_yearly(
+            process_fn=process_fn,
+            chunks_in_memory=chunks_in_memory,
+            context_months=context_months,
+            n_workers=n_workers,
+            **process_kwargs,
+        )
