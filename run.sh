@@ -36,7 +36,7 @@ unset PROJ_DATA
 
 # Logging
 LOG_FILE="${OUTPUT_DIR}/run_${tile}_${target_year}_$(date +%Y%m%d_%H%M%S).log"
-S3_LOG="${OUTPUT_DIR}/test_log.log" # "s3://maap-ops-workspace/shared/colinquinn/logs/run_${tile}_${target_year}.log"
+S3_LOG="s3://maap-ops-workspace/shared/colinquinn/logs/run_${tile}_${target_year}.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 log() {
