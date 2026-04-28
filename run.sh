@@ -46,8 +46,8 @@ log() {
 
 # [ -f /home/ops/.netrc ] && log "netrc: OK" || log "WARNING: .netrc not mounted"
 # [ -f /home/ops/.netrc ] && cp /home/ops/.netrc /root/.netrc && chmod 600 /root/.netrc
-ln -sf /home/ops/.netrc /root/.netrc
-log ".netrc credentials symlinked to /root"
+# ln -sf /home/ops/.netrc /root/.netrc
+# log ".netrc credentials symlinked to /root"
 
 log "===== Pipeline Started ====="
 log "Tile:       $tile"
@@ -69,7 +69,7 @@ cmd_download=(
     "$next_year-12-31" 
     "${INPUT_DIR}"
 )
-UV_PROJECT="${basedir}" "${cmd_download[@]}"
+HOME=/home/ops UV_PROJECT="${basedir}" "${cmd_download[@]}"
 
 
 log "Stage 2: EVI2 calculations"
