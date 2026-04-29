@@ -28,6 +28,8 @@ from rustac import DuckdbClient
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+MAX_CONCURRENT_REQUESTS = 8   # 503, request cap limits hit if too many workers
+_request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
@@ -169,28 +171,56 @@ def fetch_single_asset(asset_href: str, fill_value=SR_FILL, direct_bucket_access
             with rio.open(asset_href) as src:
                 return da.from_array(src.read(1), chunks=chunk_size)
     except Exception as e:
-        logger.warning(f"Failed to read {asset_href}: {e}")
-        return None
+        raise 
 
 
-def fetch_with_retry(asset_href, max_retries: int = 3, delay: int = 3, fill_value=SR_FILL, access_type="external"):
+def fetch_with_retry(
+    asset_href,
+    max_retries: int = 5,          # more retries to absorb 503 bursts
+    base_delay: float = 2.0,       # starting backoff in seconds
+    max_delay: float = 60.0,       # cap backoff so it doesn't spiral
+    fill_value=SR_FILL,
+    access_type="external",
+):
+
     for attempt in range(max_retries):
         try:
-            return fetch_single_asset(
-                asset_href=asset_href,
-                fill_value=fill_value,
-                direct_bucket_access=(access_type == "direct"),
-            )
-        except Exception as e:
-            if attempt < max_retries - 1:
-                logger.warning(
-                    f"Link {asset_href} attempt {attempt + 1}/{max_retries} failed: {e}. "
-                    f"Retrying in {delay} seconds..."
+            with _request_semaphore:          # limit concurrent open connections
+                return fetch_single_asset(
+                    asset_href=asset_href,
+                    fill_value=fill_value,
+                    direct_bucket_access=(access_type == "direct"),
                 )
-                time.sleep(delay)
-            else:
-                logger.error(f"All {max_retries} attempts failed for {asset_href}. Last error: {e}")
+        except Exception as e:
+            is_last = attempt == max_retries - 1
+            err_str = str(e)
+            is_503 = "503" in err_str or "ServiceUnavailable" in err_str or "SlowDown" in err_str
+
+            if is_last:
+                logger.error(
+                    f"All {max_retries} attempts failed for {asset_href}. Last error: {e}"
+                )
                 return None
+
+            # Exponential backoff: 2^attempt * base, capped at max_delay
+            computed = min(base_delay * (2 ** attempt), max_delay)
+            # Full jitter: random value in [0, computed] — spreads retries across threads
+            wait = computed * (0.5 + 0.5 * (time.time() % 1))  # cheap jitter without import random
+
+            if is_503:
+                # 503s are throttle signals — always back off, even on first attempt
+                wait = max(wait, base_delay * 2)
+                logger.warning(
+                    f"503 throttle on attempt {attempt + 1}/{max_retries} for "
+                    f"{os.path.basename(asset_href)} — backing off {wait:.1f}s"
+                )
+            else:
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries} failed for "
+                    f"{os.path.basename(asset_href)}: {e} — retrying in {wait:.1f}s"
+                )
+
+            time.sleep(wait)
 
 
 def find_tile_bounds(tile: str):

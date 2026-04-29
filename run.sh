@@ -66,7 +66,7 @@ cmd_donwload=(
     --N_WORKERS=$N_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
-# /download_hls.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --scene_only=True --mask_water=True 
+# /hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --N_WORKERS=8
 
 log "Stage 3: Calculating phenometrics"
 cmd=(
