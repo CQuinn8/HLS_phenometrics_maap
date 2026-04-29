@@ -508,23 +508,6 @@ def process_hls(tile, start_date, end_date, stat, save_dir, access_type="direct"
     
     # Build band stacks using only valid granules
     band_stack_dict = {}
-    # for band in common_bands:
-    #     print(band)
-    #     urls = [row.granule_path.replace("Fmask", (L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index)[band]) 
-    #             for row in granule_df.itertuples()]
-    #     results = [fetch_with_retry(u, access_type=access_type) for u in urls]
-        
-    #     # Secondary filter in case any non-Fmask bands fail
-    #     valid_results = [(r, i) for i, r in enumerate(results) if r is not None and r.shape != ()]
-        
-    #     if len(valid_results) == 0:
-    #         logger.warning(f"No valid arrays for band {band}, skipping tile.")
-    #         return
-        
-    #     if len(valid_results) < len(results):
-    #         logger.warning(f"Band {band}: {len(results) - len(valid_results)} arrays dropped")
-        
-    #     band_stack_dict[band] = da.stack([r for r, _ in valid_results], axis=0)
     for band in common_bands:
         print(band)
         urls = [row.granule_path.replace("Fmask", (L8_name2index if row.Sat in ["L30", "L10"] else S2_name2index)[band]) 
@@ -577,10 +560,15 @@ def process_hls(tile, start_date, end_date, stat, save_dir, access_type="direct"
 
     if scene_only:
         # process and save EVI2
-        for i, row in enumerate(granule_df.itertuples()):
+        for i, row in enumerate(granule_df.itertuples()):            
+            print(row)
             scene_date = datetime.strptime(os.path.basename(row.granule_path).split('.')[3][:7], "%Y%j")
-            scene_id = os.path.basename(row.granule_path).replace("Fmask", "").rstrip(".")
-    
+            print(scene_date)
+            # scene_id = os.path.basename(row.granule_path).replace("Fmask", "").rstrip(".")
+            # filepath = Path(row.granule_path)
+            # year = filepath.parts[2]
+            # granule_name = filepath.parts[7]
+            
             # outdir: TILEID/YEAR/<.tifs>
             scene_dir = os.path.join(out_dir, scene_date.strftime('%Y'))
             os.makedirs(scene_dir, exist_ok=True)
@@ -591,7 +579,8 @@ def process_hls(tile, start_date, end_date, stat, save_dir, access_type="direct"
             evi2_out = scene_evi2.compute().astype(np.float32)
 
             # Save
-            out_path = os.path.join(scene_dir, f"{scene_id}.EVI2.tif")
+            out_name = (f"HLS.{row.Sat}.T{tile}.{scene_date.year}{scene_date.strftime('%j')}.2.0.EVI2.tif")
+            out_path = os.path.join(scene_dir, out_name)
             saveGeoTiff(out_path, evi2_out, row.granule_path, nodata=np.nan)
             logger.info(f"Saved: {out_path}")
 

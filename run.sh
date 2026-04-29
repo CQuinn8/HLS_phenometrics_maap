@@ -23,7 +23,7 @@ echo "vCPUs: $NPROC  Workers: $N_WORKERS"
  
 tile="$1"
 target_year="$2"
-chunk_size=1230
+chunk_size=2200
 
 OUTPUT_DIR=output
 INPUT_DIR=input
@@ -44,11 +44,6 @@ log() {
     aws s3 cp "$LOG_FILE" "$S3_LOG" 2>/dev/null &
 }
 
-# [ -f /home/ops/.netrc ] && log "netrc: OK" || log "WARNING: .netrc not mounted"
-# [ -f /home/ops/.netrc ] && cp /home/ops/.netrc /root/.netrc && chmod 600 /root/.netrc
-# ln -sf /home/ops/.netrc /root/.netrc
-# log ".netrc credentials symlinked to /root"
-
 log "===== Pipeline Started ====="
 log "Tile:       $tile"
 log "Year:       $target_year"
@@ -56,42 +51,22 @@ log "Input dir:  $INPUT_DIR"
 log "Output dir: $OUTPUT_DIR"
 log "Basedir:    $basedir"
 
-# 1a. Download HLS Scenes and compute EVI2
+# 1. Download HLS Scenes and compute EVI2
 # take target_year and generate start/end dates +/- 1 year, check for boundaries 
 prev_year=$(( target_year - 1 ))
 next_year=$(( target_year + 1 ))
 
-log "Stage 1: HLS download"
-# cmd_download=(
-#     uv run --no-dev "${basedir}/getHLS.sh"
-#     $tile 
-#     "$prev_year-01-01" 
-#     "$next_year-12-31" 
-#     "${INPUT_DIR}"
-# )
-
-# HOME=/home/ops UV_PROJECT="${basedir}" "${cmd_download[@]}"
+log "Stage 1: HLS download and Stage 2 EVI calculation"
 cmd_donwload=(
-    uv run --no-dev "${basedir}/download_hls.py"
+    uv run --no-dev "${basedir}/hls_download_scenes.py"
     --tile=$tile 
     --start_date="$prev_year-01-01" 
     --end_date="$next_year-12-31" 
-    --output_dir="${OUTPUT_DIR}"
-    --scene_only=True 
-    --mask_water=True
+    --output_dir=$INPUT_DIR
+    --N_WORKERS=$N_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
-
-log "Stage 2: EVI2 calculations"
-cmd_calculate_evi=(
-    uv run --no-dev "${basedir}/calculate_evi.py"
-    --tile=$tile 
-    --indir=$INPUT_DIR
-    --outdir=$INPUT_DIR
-    --n_workers=$(( $(nproc)/2 - 1 ))
-)
-UV_PROJECT="${basedir}" "${cmd_calculate_evi[@]}"
-
+# /download_hls.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --scene_only=True --mask_water=True 
 
 log "Stage 3: Calculating phenometrics"
 cmd=(
@@ -102,7 +77,7 @@ cmd=(
     --target_year="${target_year}"
     --context_months=12
     --chunk_size="${chunk_size}"
-    --n_workers=20 #$N_WORKERS
+    --n_workers=$N_WORKERS
 )
 
 UV_PROJECT="${basedir}" "${cmd[@]}"
