@@ -63,7 +63,7 @@ cmd_donwload=(
     --start_date="$prev_year-01-01" 
     --end_date="$next_year-12-31" 
     --output_dir=$INPUT_DIR
-    --N_WORKERS=$N_WORKERS
+    --N_WORKERS=8
 )
 UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
 # /hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --N_WORKERS=8

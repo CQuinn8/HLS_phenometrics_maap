@@ -551,15 +551,6 @@ def despike_timeseries_chunk(
     n_times = len(chunk.time)
     chunk_values = chunk.values  # (time, y, x)
 
-    # Build per-pixel actual DOY array if available
-    # if doy_data is not None and composite_start_doys is not None:
-    #     # actual_doy[t, y, x] = composite_start_doy[t] + pixel_offset[t, y, x]
-    #     actual_doy = np.full_like(chunk_values, np.nan, dtype=np.float32)
-    #     for t in range(n_times):
-    #         actual_doy[t, :, :] = composite_start_doys[t] + doy_data.values[t, :, :]
-    #     use_pixel_doy = True
-    # else:
-    # Fallback: nominal time coordinate (same for all pixels)
     times = pd.to_datetime(chunk.time.values)
     nominal_days = (times - times[0]).days.astype(np.float32)
     use_pixel_doy = False
@@ -567,82 +558,6 @@ def despike_timeseries_chunk(
     # Spike detection
     spike_mask = np.zeros_like(chunk_values, dtype=bool)
 
-    # if use_pixel_doy:
-    #     # ----------------------------------------------------------
-    #     # Per-pixel DOY path: gaps differ across pixels
-    #     # ----------------------------------------------------------
-    #     # For each time step t (interior points: 1..n_times-2):
-    #     #   pre  = actual_doy[t-1]
-    #     #   curr = actual_doy[t]
-    #     #   post = actual_doy[t+1]
-    #     #   gap  = post - pre   (per pixel)
-
-    #     for t in range(1, n_times - 1):
-    #         evi_pre = chunk_values[t - 1]
-    #         evi_curr = chunk_values[t]
-    #         evi_post = chunk_values[t + 1]
-
-    #         doy_pre = actual_doy[t - 1]
-    #         doy_curr = actual_doy[t]
-    #         doy_post = actual_doy[t + 1]
-
-    #         # Per-pixel gap
-    #         gap = doy_post - doy_pre
-
-    #         # Interpolation weight
-    #         denom = doy_post - doy_pre
-    #         # Avoid divide by zero
-    #         safe_denom = np.where(np.abs(denom) > 0.001, denom, np.nan)
-    #         weight = (doy_curr - doy_pre) / safe_denom
-
-    #         # Fitted value
-    #         evi_fit = evi_pre + (evi_post - evi_pre) * weight
-
-    #         # Differences
-    #         diff = evi_fit - evi_curr
-    #         abs_diff = np.abs(diff)
-
-    #         amplitude = evi_post - evi_pre
-    #         safe_amp = np.where(np.abs(amplitude) > 0.001, amplitude, np.nan)
-    #         rel_diff = np.abs(diff / safe_amp)
-
-    #         # Spike conditions
-    #         spike_mask[t] = (
-    #                 (abs_diff > abs_threshold)
-    #                 & (rel_diff > rel_threshold)
-    #                 & (gap < max_gap_days)
-    #                 & (~np.isnan(evi_pre))
-    #                 & (~np.isnan(evi_curr))
-    #                 & (~np.isnan(evi_post))
-    #                 & (~np.isnan(doy_pre))
-    #                 & (~np.isnan(doy_post))
-    #         )
-
-    #     # Edge handling
-    #     if handle_edges and n_times >= 2:
-    #         # First observation
-    #         gap_first = actual_doy[1] - actual_doy[0]
-    #         diff_first = np.abs(chunk_values[0] - chunk_values[1])
-    #         spike_mask[0] = (
-    #                 (diff_first > abs_threshold * 1.5)
-    #                 & (gap_first < max_gap_days)
-    #                 & (~np.isnan(chunk_values[0]))
-    #                 & (~np.isnan(chunk_values[1]))
-    #                 & (~np.isnan(gap_first))
-    #         )
-
-    #         # Last observation
-    #         gap_last = actual_doy[-1] - actual_doy[-2]
-    #         diff_last = np.abs(chunk_values[-1] - chunk_values[-2])
-    #         spike_mask[-1] = (
-    #                 (diff_last > abs_threshold * 1.5)
-    #                 & (gap_last < max_gap_days)
-    #                 & (~np.isnan(chunk_values[-1]))
-    #                 & (~np.isnan(chunk_values[-2]))
-    #                 & (~np.isnan(gap_last))
-    #         )
-
-    # else:
     # nominal time gaps (same for all pixels when DOY.tif is NaN)
     time_days_da = xr.DataArray(nominal_days, dims=['time'],
                                 coords={'time': chunk.time})
@@ -750,7 +665,8 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
     senescence_rate_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
 
     mean_revisit_time = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-
+    quality_pixels = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
+    
     year_evi = chunk
     if len(year_evi.time) == 0:
         return None
@@ -822,6 +738,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
             if len(pixel_doys_valid) > 1:
                 doy_gaps = np.diff(pixel_doys_valid)
                 mean_revisit_time[0, yi, xi] = np.mean(doy_gaps)
+                quality_pixels[0, yi, xi] = len(valid_pixel)
 
             # Greenup: first DOY exceeding threshold BEFORE peak
             pre_peak_mask = pixel_doys < pixel_max_doy
@@ -938,7 +855,8 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
         'greenup_rate_doy': greenup_rate_doy,
         'senescence_rate': senescence_rate,
         'senescence_rate_doy': senescence_rate_doy,
-        # 'mean_revisit_time': mean_revisit_time,
+        'mean_revisit_time': mean_revisit_time,
+        'quality_pixel_cnt': quality_pixels,
     }
 
 
@@ -1070,7 +988,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         'greenup_rate_doy': 'greenup_rate_doy',
         'senescence_rate': 'senescence_rate',
         'senescence_rate_doy': 'senescence_rate_doy',
-        # 'mean_revisit_time': 'mean_revisit_time',
+        'mean_revisit_time': 'mean_revisit_time',
+        'quality_pixel_cnt': 'quality_pixel_cnt'
     }
     results = {}
 

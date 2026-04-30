@@ -1,5 +1,5 @@
 # Usage:
-# python download_hls.py --tile=18SUJ --start_date="2024-01-01" --end_date="2024-03-30" --output_dir="./temp_out" --mask_water=True
+# python download_hls.py --tile=18SUJ --start_date="2024-01-01" --end_date="2024-03-30" --output_dir="./temp_out"
 
 #!/panfs/ccds02/nobackup/people/qzhou2/miniforge3/envs/hls_mamba/bin/python
 import os
@@ -27,15 +27,6 @@ from rasterio.session import AWSSession
 from rustac import DuckdbClient
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-MAX_CONCURRENT_REQUESTS = 8   # 503, request cap limits hit if too many workers
-_request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-)
-logging.getLogger("botocore").setLevel(logging.WARNING)
-logger = logging.getLogger("HLSComposite")
 
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
@@ -73,7 +64,7 @@ class CredentialManager:
                 or self._fetch_time is None
                 or (now - self._fetch_time) > CREDENTIAL_REFRESH_SECONDS
             ):
-                logger.info("fetching/refreshing S3 credentials")
+                print("fetching/refreshing S3 credentials")
                 self._credentials = self._fetch_credentials()
                 self._fetch_time = now
                 self._session = AWSSession(**self._credentials)
@@ -130,7 +121,7 @@ QA_BIT = {
     "aerosol_h": 7,
 }
 
-chunk_size = dict(band=1, x=1830, y=1830)
+chunk_size = (1830, 1830)
 image_size = (3660, 3660)
 
 
@@ -185,19 +176,18 @@ def fetch_with_retry(
 
     for attempt in range(max_retries):
         try:
-            with _request_semaphore:          # limit concurrent open connections
-                return fetch_single_asset(
-                    asset_href=asset_href,
-                    fill_value=fill_value,
-                    direct_bucket_access=(access_type == "direct"),
-                )
+            return fetch_single_asset(
+                asset_href=asset_href,
+                fill_value=fill_value,
+                direct_bucket_access=(access_type == "direct"),
+            )
         except Exception as e:
             is_last = attempt == max_retries - 1
             err_str = str(e)
             is_503 = "503" in err_str or "ServiceUnavailable" in err_str or "SlowDown" in err_str
 
             if is_last:
-                logger.error(
+                print(
                     f"All {max_retries} attempts failed for {asset_href}. Last error: {e}"
                 )
                 return None
@@ -210,12 +200,12 @@ def fetch_with_retry(
             if is_503:
                 # 503s are throttle signals — always back off, even on first attempt
                 wait = max(wait, base_delay * 2)
-                logger.warning(
+                print(
                     f"503 throttle on attempt {attempt + 1}/{max_retries} for "
                     f"{os.path.basename(asset_href)} — backing off {wait:.1f}s"
                 )
             else:
-                logger.warning(
+                print(
                     f"Attempt {attempt + 1}/{max_retries} failed for "
                     f"{os.path.basename(asset_href)}: {e} — retrying in {wait:.1f}s"
                 )
@@ -307,9 +297,9 @@ def process_scene(
         arr = fetch_with_retry(url, access_type=access_type)
 
         if arr is None:
-            logger.warning(f"[{row.Sat} | {row.Date}] band '{band}' fetch returned None: {url}")
+            print(f"[{row.Sat} | {row.Date}] band '{band}' fetch returned None: {url}")
         elif arr.shape != (image_size[0], image_size[1]):
-            logger.warning(
+            print(
                 f"[{row.Sat} | {row.Date}] band '{band}' unexpected shape {arr.shape}: {url}"
             )
             arr = None
@@ -384,14 +374,14 @@ def process_hls(tile, start_date, end_date, save_dir, access_type="direct", N_WO
     print(granule_df)
 
     if len(granule_df) == 0:
-        logger.warning(f"No granules found for {tile}. Creating empty indicator file.")
+        print(f"No granules found for {tile}. Creating empty indicator file.")
         with open(os.path.join(out_dir, "No granules found"), "w") as f:
             pass
         return
 
     rows = list(granule_df.itertuples())
     n_scenes = len(rows)
-    logger.info(f"Submitting {n_scenes} scenes to {N_WORKERS} workers")
+    print(f"Submitting {n_scenes} scenes to {N_WORKERS} workers")
     
     with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
         futures = {
@@ -419,12 +409,12 @@ def process_hls(tile, start_date, end_date, save_dir, access_type="direct", N_WO
                     n_ok += 1
                 else:
                     n_skip += 1
-                logger.info(f"[{n_done}/{n_scenes}] {status}")
+                print(f"[{n_done}/{n_scenes}] {status}")
             except Exception as e:
                 n_err += 1
-                logger.error(f"[{n_done}/{n_scenes}] ERROR {row.Sat} {row.Date}: {e}")
+                print(f"[{n_done}/{n_scenes}] ERROR {row.Sat} {row.Date}: {e}")
 
-    logger.info(
+    print(
         f"Done — {n_scenes} scenes: {n_ok} saved, {n_skip} skipped, {n_err} errors"
     )
 
