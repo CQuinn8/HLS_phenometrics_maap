@@ -19,12 +19,22 @@ if [[ $NPROC -le 8 ]]; then
 else
     N_WORKERS=$(( NPROC * 3 / 4 )) 
 fi
-echo "vCPUs: $NPROC  Workers: $N_WORKERS"
+DOWNLOAD_CAP=8
+if [[ $NPROC -le 4 ]]; then
+    N_DOWNLOAD_WORKERS=1                                   
+elif [[ $NPROC -le 8 ]]; then
+    N_DOWNLOAD_WORKERS=$(( NPROC / 2 ))
+else
+    N_DOWNLOAD_WORKERS=$(( NPROC < DOWNLOAD_CAP ? NPROC : DOWNLOAD_CAP ))
+fi
+echo "CPUs         : $NPROC"
+echo "Download     : $N_DOWNLOAD_WORKERS workers (cap=${DOWNLOAD_CAP})"
+echo "Phenometrics : $N_WORKERS workers"
  
 tile="$1"
 target_year="$2"
 chunk_size=1220
-context_months=0
+context_months=12
 
 OUTPUT_DIR=output
 INPUT_DIR=input
@@ -61,10 +71,10 @@ log "Stage 1: HLS download and Stage 2 EVI calculation"
 cmd_donwload=(
     uv run --no-dev "${basedir}/hls_download_scenes.py"
     --tile=$tile 
-    --start_date="$target_year-01-01" # "$prev_year-01-01" 
-    --end_date="$target_year-12-31" # "$next_year-12-31" 
+    --start_date="$prev_year-01-01" 
+    --end_date="$next_year-12-31" 
     --output_dir=$INPUT_DIR
-    --N_WORKERS=8
+    --N_WORKERS=$N_DOWNLOAD_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
 # /hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --N_WORKERS=8
