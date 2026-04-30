@@ -23,7 +23,7 @@ echo "vCPUs: $NPROC  Workers: $N_WORKERS"
  
 tile="$1"
 target_year="$2"
-chunk_size=2200
+chunk_size=1220
 
 OUTPUT_DIR=output
 INPUT_DIR=input
@@ -79,7 +79,8 @@ cmd=(
     --chunk_size="${chunk_size}"
     --n_workers=$N_WORKERS
 )
-
+# run_phenometrics.py --data_dir=input --output_path=output --tile=18SUJ --target_year=2024 --context_months=12 --chunk_size=2200 --n_workers=16
+# run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily-subset-SERC/ --output_path=output-SERC --tile=18SUJ --target_year=2021 --context_months=12 --chunk_size=10 --n_workers=2
 UV_PROJECT="${basedir}" "${cmd[@]}"
 
 log "COMPLETE"

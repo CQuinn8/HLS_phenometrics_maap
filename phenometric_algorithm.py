@@ -29,21 +29,13 @@ def _precompute_knots(
     n_knots: int,
     k:       int = 5,
 ) -> np.ndarray | None:
-    """
-    Compute interior knots from a 1-D time vector.
-    Called once when the time axis is shared across all pixels.
-    Per-pixel: the caller trims these to the pixel's valid x range.
-    """
     interior = np.unique(np.percentile(x, np.linspace(10, 90, n_knots)))
     interior = interior[(interior > x[0]) & (interior < x[-1])]
     return interior if len(interior) >= 3 else None
 
 
 def _make_worker_slices(ny: int, n_workers: int) -> list[tuple[int, int]]:
-    """
-    Divide ny rows into exactly n_workers contiguous slices as evenly
-    as possible. One slice per worker minimises joblib dispatch overhead.
-    """
+    """ Takes n_rows of data and n_workers and calculates slice coords for each worker """
     base, extra = divmod(ny, n_workers)
     slices, start = [], 0
     for i in range(n_workers):
@@ -55,20 +47,16 @@ def _make_worker_slices(ny: int, n_workers: int) -> list[tuple[int, int]]:
 
 
 def _process_worker_slice(
-    # --- memmap paths (strings — cheap to pickle) ---
     evi_mmap_path:      str,
     evi_shape:          tuple,          # (n_times, ny, nx)
-    time_mmap_path:     str | None,     # None when shared time axis
-    # --- row range owned by this worker ---
+    # row range owned by this worker
     row_start:          int,
     row_end:            int,
-    # --- small 1-D arrays (cheap to pickle) ---
+    
     t_nominal:          np.ndarray,     # (n_times,) shared time axis
     weights_template:   np.ndarray,     # (n_times,) Gaussian-decay weights
     t_daily:            np.ndarray,     # (n_output,) evaluation points
     precomputed_knots:  np.ndarray | None,
-    # --- flags and scalars ---
-    shared_time_axis:   bool,
     min_valid_points:   int,
     value_min:          float,
     value_max:          float,
@@ -76,55 +64,36 @@ def _process_worker_slice(
     k:                  int,
     n_output:           int,
 ) -> tuple[int, int, np.ndarray]:
-    """
-    Fit splines for all pixels in row_start:row_end.
 
-    Opens memmaps read-only inside the worker — the OS maps the same
-    physical pages that were written by the parent process, so no data
-    is copied across the process boundary.
-
-    Returns (row_start, row_end, result)
-    where result.shape == (n_output, n_rows, nx).
-    """
-    # Zero-copy reads from temp file written by parent
     evi_data  = np.memmap(evi_mmap_path,  dtype=np.float32,
                           mode="r", shape=evi_shape)
-    time_data = (np.memmap(time_mmap_path, dtype=np.float64,
-                           mode="r", shape=evi_shape)
-                 if time_mmap_path is not None else None)
 
     n_rows = row_end - row_start
     nx     = evi_shape[2]
     result = np.full((n_output, n_rows, nx), np.nan, dtype=np.float32)
 
+    # for each local row 
     for local_yi, yi in enumerate(range(row_start, row_end)):
+        # process all x pixels in row yi
         for xi in range(nx):
-
-            # ----------------------------------------------------------
-            # 1. Extract pixdel time series
-            # ----------------------------------------------------------
+            
+            # 1. Extract single x,y pixel time series
             ts      = evi_data[:, yi, xi]
-            t_pixel = t_nominal if shared_time_axis else time_data[:, yi, xi]
-
-            valid   = np.isfinite(ts)
+            t_pixel = t_nominal
+            valid   = np.isfinite(ts) 
             n_valid = valid.sum()
 
-            # ----------------------------------------------------------
-            # 2. Low-data handling
-            # ----------------------------------------------------------
+            # 2. Low-data handling (ToDo: add in fill logic) 
             if n_valid < min_valid_points:
                 if fill_low_data == "mean" and n_valid > 0:
                     result[:, local_yi, xi] = np.nanmean(ts[valid])
-                continue   # leave as NaN otherwise
+                continue   # leave as NaN for default
 
             x_valid = t_pixel[valid]
             y_valid = ts[valid].astype(np.float64)
             w_valid = weights_template[valid].copy()
 
-            # ----------------------------------------------------------
             # 3. Monotonicity check + deduplication
-            #    Only sort when necessary — saves ~15% for well-ordered data
-            # ----------------------------------------------------------
             if not np.all(np.diff(x_valid) > 1e-6):
                 idx     = np.argsort(x_valid, kind="stable")
                 x_valid = x_valid[idx]
@@ -139,10 +108,7 @@ def _process_worker_slice(
             if len(x_valid) < min_valid_points:
                 continue
 
-            # ----------------------------------------------------------
-            # 4. Up-weight EVI extremes
-            #    Encourages the spline to honour seasonal peaks and troughs
-            # ----------------------------------------------------------
+            # 4. Up-weight EVI extremes to allow spline to capture peaks/troughs
             y_range = y_valid.max() - y_valid.min()
             if y_range > 0.1:
                 lo = y_valid.min() + 0.20 * y_range
@@ -150,13 +116,9 @@ def _process_worker_slice(
                 w_valid[y_valid < lo] *= 2.0
                 w_valid[y_valid > hi] *= 2.0
 
-            # ----------------------------------------------------------
-            # 5. Knots
-            #    Shared axis: trim the precomputed set to this pixel's range.
-            #    Pixel-DOY:   compute fresh from this pixel's x_valid.
-            # ----------------------------------------------------------
+            # 5. Knots: trim the precomputed set to this pixel's range
             if precomputed_knots is not None:
-                # Try shared knots first
+                # test precompute: filter dates to the precomputed range
                 interior = precomputed_knots[
                     (precomputed_knots > x_valid[0]) &
                     (precomputed_knots < x_valid[-1])
@@ -167,16 +129,16 @@ def _process_worker_slice(
                 obs_per_knot = len(x_valid) / max(len(interior), 1)
                 if obs_per_knot < 3 or len(interior) < 3:
                     # Fall back to per-pixel knots based on actual valid observations
-                    n_xu     = len(x_valid)
-                    n_k      = min(max(n_xu // 5, 6), n_xu - k - 1)
-                    pct      = np.linspace(10, 90, n_k)
+                    n_dates     = len(x_valid)
+                    n_knots      = min(max(n_dates // 5, 6), n_dates - k - 1)
+                    pct      = np.linspace(10, 90, n_knots)
                     interior = np.unique(np.percentile(x_valid, pct))
                     interior = interior[(interior > x_valid[0]) &
                                         (interior < x_valid[-1])]
             else:
-                n_xu     = len(x_valid)
-                n_k      = min(max(n_xu // 5, 6), n_xu - k - 1)
-                pct      = np.linspace(10, 90, n_k)
+                n_dates     = len(x_valid)
+                n_knots      = min(max(n_dates // 5, 6), n_dates - k - 1)
+                pct      = np.linspace(10, 90, n_knots)
                 interior = np.unique(np.percentile(x_valid, pct))
                 interior = interior[(interior > x_valid[0]) &
                                     (interior < x_valid[-1])]
@@ -184,17 +146,11 @@ def _process_worker_slice(
             if len(interior) < 3:
                 continue
 
-            # ----------------------------------------------------------
-            # 6. Fit + evaluate
-            # ----------------------------------------------------------
+            # 6. Fit spline to full context observation dates and then evaluate on daily ts
             try:
-                spl = LSQUnivariateSpline(
-                    x_valid, y_valid, interior, w=w_valid, k=k
-                )
-                result[:, local_yi, xi] = np.clip(
-                    spl(t_daily), value_min, value_max
-                ).astype(np.float32)
-
+                spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=k)
+                # evaluate and make sure predictions are clamped to EVI range for all dates at this y,x
+                result[:, local_yi, xi] = np.clip(spl(t_daily), value_min, value_max).astype(np.float32)
             except Exception:
                 if fill_low_data == "mean":
                     result[:, local_yi, xi] = float(np.nanmean(y_valid))
@@ -207,17 +163,13 @@ def smooth_evi_chunk_for_year(
     # --- algorithm config ---
     context_months:       int   = 12,
     min_valid_points:     int   = 30,
-    min_valid_frac: float = 0.30,
+    min_valid_frac:       float = 0.30,
     fill_low_data:        str   = "nan", # currently no gap filling, Bolton uses the context years to "grab" similar values but that's a weaker method 
     value_min:            float = -1.0,
     value_max:            float = 1.0,
     daily_output:         bool  = True,
-    k:                    int   = 5,      # spline degree
-    # # --- DOY / composite inputs ---
-    # doy_data:             xr.DataArray  = None,
-    # composite_start_doys: np.ndarray    = None,
-    # --- runtime ---
-    testing_mode:         bool      = False,
+    k:                    int   = 5,      # spline degree, 4 = cubic
+    testing_mode:         bool  = False,
     _pool:                Parallel | None = None,  # warm pool from caller
     n_jobs=-1,
 ) -> xr.DataArray:
@@ -243,7 +195,7 @@ def smooth_evi_chunk_for_year(
     composite_start_doys : 1-D array of composite-period start DOYs aligned
                            to chunk.time. Required when doy_data is provided.
     testing_mode         : If True, output spans the full fitting window
-                           instead of target_year only (useful for QC plots).
+                           instead of target_year only (used for QC plots).
     _pool                : Pre-warmed joblib.Parallel instance. Pass this in
                            from process_all_chunks_yearly so the loky pool
                            startup cost is paid once per run, not per chunk.
@@ -251,7 +203,7 @@ def smooth_evi_chunk_for_year(
     Returns
     -------
     xr.DataArray : (time, y, x) daily smoothed EVI.
-                   time = 365 days of target_year (or full window if testing_mode).
+                   time = 365 days of target_year (or full context window if testing_mode).
     """
     t_start   = time.time()
     if _pool is not None and hasattr(_pool, 'n_jobs'):
@@ -263,7 +215,7 @@ def smooth_evi_chunk_for_year(
         print(f"  Workers   : {n_workers} (local pool)")
 
     # ----------------------------------------------------------------
-    # 1. Temporal subset — restrict to fitting window
+    # 1. Temporal subset — restrict to context window (should be this window incoming)
     # ----------------------------------------------------------------
     fit_start = (pd.Timestamp(f"{target_year}-01-01")
                  - pd.DateOffset(months=context_months))
@@ -278,48 +230,27 @@ def smooth_evi_chunk_for_year(
         )
 
     # ----------------------------------------------------------------
-    # 2. DOY / composite-start setup
-    #    Only active for 10-day composites where actual pixel-level
-    #    observation DOYs are available.
-    # ----------------------------------------------------------------
-    # use_pixel_doy  = doy_data is not None and composite_start_doys is not None
-    # fit_doy        = None
-    # fit_comp_start = None
-
-    # if use_pixel_doy:
-    #     fit_doy   = doy_data.sel(time=slice(fit_start, fit_end))
-    #     time_mask = ((chunk.time >= fit_start) & (chunk.time <= fit_end)).values
-    #     fit_comp_start = composite_start_doys[time_mask]
-
-    #     if len(fit_comp_start) != fit_chunk.sizes["time"]:
-    #         print(f"  Warning: comp_start length {len(fit_comp_start)} "
-    #               f"!= chunk time {fit_chunk.sizes['time']} — truncating")
-    #         fit_comp_start = fit_comp_start[:fit_chunk.sizes["time"]]
-
-    # ----------------------------------------------------------------
-    # 3. Drop entirely-NaN timesteps
+    # 2. Drop entirely-NaN timesteps
     # ----------------------------------------------------------------
     valid_ts  = np.any(np.isfinite(fit_chunk.values), axis=(1, 2))
     n_dropped = int((~valid_ts).sum())
     if n_dropped > 0:
         fit_chunk = fit_chunk.isel(time=valid_ts)
-        # if use_pixel_doy:
-        #     fit_doy        = fit_doy.isel(time=valid_ts)
-        #     fit_comp_start = fit_comp_start[valid_ts]
 
+    # dim size of data (n timesteps, y pixel cnt, x pixel cnt)
     n_times, ny, nx = fit_chunk.shape
     n_pixels        = ny * nx
 
     # ----------------------------------------------------------------
-    # 3b. Resolve effective min_valid_points
+    # 3. Calc effective min_valid_points
     #     Hard floor  : k+1 (minimum for a degree-k spline)
-    #     Hard ceiling: n_times (can't require more points than exist)
+    #     Hard ceiling: n_times (can't require more points than time steps exist)
     # ----------------------------------------------------------------        
     K_FLOOR     = k + 1                                    # e.g. 6 for k=5
     frac_floor  = int(np.ceil(n_times * min_valid_frac))   # e.g. 11 from 35×0.3
 
     effective_min_valid = min(
-        max(K_FLOOR, frac_floor),    # adaptive floor
+        max(K_FLOOR, frac_floor),    # adaptive floor when large amount of data
         min_valid_points,            # args ceiling — lowers threshold if < floor
         n_times,                     # hard ceiling - don't overfit
     )
@@ -337,35 +268,14 @@ def smooth_evi_chunk_for_year(
     # ----------------------------------------------------------------
     # 4. Nominal time axis
     #    Days since (target_year-1)-01-01 — keeps values in a sensible
-    #    range for spline numerics regardless of absolute year
+    #    range for spline fit regardless of year in context window
     # ----------------------------------------------------------------
     ref_date  = np.datetime64(f"{target_year - 1}-01-01")
     ref_year  = target_year - 1
     t_nominal = ((fit_chunk.time.values - ref_date)
                  / np.timedelta64(1, "D")).astype(np.float64)
-
     # ----------------------------------------------------------------
-    # 5. Per-pixel time matrix (pixel-DOY mode only)
-    #    Each pixel gets its own time axis derived from actual observation
-    #    DOYs within each composite window.
-    # ----------------------------------------------------------------
-    # if use_pixel_doy:
-    #     fit_years       = fit_chunk.time.dt.year.values   # (n_times,)
-    #     fit_doy_values  = fit_doy.values                  # (n_times, ny, nx)
-    #     pixel_time_data = np.zeros((n_times, ny, nx), dtype=np.float64)
-
-    #     for t_idx in range(n_times):
-    #         yr_off = (fit_years[t_idx] - ref_year) * 365
-    #         pixel_time_data[t_idx] = (yr_off
-    #                                   + fit_comp_start[t_idx]
-    #                                   + fit_doy_values[t_idx])
-    #     shared_time_axis = False
-    # else:
-    pixel_time_data  = None
-    shared_time_axis = True
-
-    # ----------------------------------------------------------------
-    # 6. Output time axis
+    # 5. Output time axis - infill days so EVI2 is continuous across DOY of target-year
     # ----------------------------------------------------------------
     daily_dates = (pd.date_range(fit_start, fit_end)
                    if testing_mode
@@ -375,13 +285,14 @@ def smooth_evi_chunk_for_year(
                 / np.timedelta64(1, "D")).astype(np.float64)
     n_output = len(daily_dates)
     t_daily = np.clip(t_daily, t_nominal[0], t_nominal[-1])
-    print(f"t_nominal: {t_nominal[0]:.1f} - {t_nominal[-1]:.1f}", flush=True)
-    print(f"t_daily:   {t_daily[0]:.1f}  - {t_daily[-1]:.1f}", flush=True)
-    print(f"overlap:   {t_daily[0] >= t_nominal[0]} to {t_daily[-1] <= t_nominal[-1]}", flush=True)
+    # print(f"t_nominal: {t_nominal[0]:.1f} - {t_nominal[-1]:.1f}", flush=True)
+    # print(f"t_daily:   {t_daily[0]:.1f}  - {t_daily[-1]:.1f}", flush=True)
+    # print(f"overlap:   {t_daily[0] >= t_nominal[0]} to {t_daily[-1] <= t_nominal[-1]}", flush=True)
+    
     # ----------------------------------------------------------------
-    # 7. Gaussian-decay weight template
+    # 6. Gaussian-decay weight template
     #    Observations near the centre of target_year get full weight;
-    #    context observations are downweighted by distance.
+    #    context observations are downweighted by distance
     # ----------------------------------------------------------------
     target_center    = float(
         (np.datetime64(f"{target_year}-07-01") - ref_date)
@@ -391,30 +302,27 @@ def smooth_evi_chunk_for_year(
     weights_template = np.exp(-0.25 * days_from_center / 365) * 0.85 + 0.15
 
     # ----------------------------------------------------------------
-    # 8. Knot precomputation
-    #    Shared time axis: compute once from the full t_nominal vector,
+    # 7. Knot precomputation
+    #    compute once from the full t_nominal vector,
     #    then trim to each pixel's valid range inside the worker.
-    #    Pixel-DOY: each worker computes knots per-pixel from its own x.
+    #    This is annoying but allows for slightly faster compute.
     # ----------------------------------------------------------------
-    if shared_time_axis:
-        n_xu  = len(t_nominal)
-        n_k   = min(max(n_xu // 3, 12), n_xu - k - 1)
-        precomputed_knots = _precompute_knots(t_nominal, n_k, k)
-        if precomputed_knots is None:
-            raise ValueError("Could not compute interior knots from time axis — "
-                             "check that n_times is sufficient.")
-        print(f"  Time axis : shared | {n_k} knots precomputed once "
-              f"→ {len(precomputed_knots)} interior after trim")
-    else:
-        precomputed_knots = None
-        print(f"  Time axis : per-pixel (10-day composite DOY mode)")
+    n_dates  = len(t_nominal)
+    n_knots   = min(max(n_dates // 3, 12), # exceed n_months
+                    n_dates - k - 1)       # don't allow to exceed dof
+    precomputed_knots = _precompute_knots(t_nominal, n_knots, k)
+    if precomputed_knots is None:
+        raise ValueError("Could not compute interior knots from time axis — "
+                         "check that n_times is sufficient.")
+    print(f"  Time axis : shared | {n_knots} knots precomputed once "
+          f" {len(precomputed_knots)} interior after trim")
 
     print(f"  Workers   : {n_workers} processes | "
           f"Output: {n_output} days")
     
     # ----------------------------------------------------------------
-    # 9. Write memmap temp files
-    #    Parent writes once → workers read zero-copy via OS page mapping.
+    # 8. Write memmap temp files for distributed processing
+    #    Parent writes once - workers read zero-copy via OS page mapping.
     #    TemporaryDirectory cleans up automatically on exit.
     # ----------------------------------------------------------------
     evi_shape    = (n_times, ny, nx)
@@ -428,18 +336,9 @@ def smooth_evi_chunk_for_year(
         mm[:]    = fit_chunk.values.astype(np.float32)
         mm.flush(); del mm
 
-        # Time memmap (pixel-DOY mode only)
-        time_path = None
-        if not shared_time_axis:
-            time_path = str(Path(tmpdir) / "time.mmap")
-            mm        = np.memmap(time_path, dtype=np.float64,
-                                  mode="w+", shape=evi_shape)
-            mm[:]     = pixel_time_data
-            mm.flush(); del mm, pixel_time_data
-
         # ----------------------------------------------------------------
         # 10. Dispatch
-        #     One task per worker, each covering ~ny/n_workers rows.
+        #     One task per worker, each covering ~ny/n_workers rows of data.
         #     Use a warm pool if provided, otherwise create a local one.
         # ----------------------------------------------------------------
         worker_slices = _make_worker_slices(ny, n_workers)
@@ -451,16 +350,14 @@ def smooth_evi_chunk_for_year(
         print(f"  Slices    : {len(worker_slices)} × ~{ny // n_workers} rows each")
         t_dispatch = time.time()
 
-        # Shared kwargs — same for every worker, kept in one place
+        # Shared kwargs — same for every worker
         worker_kwargs = dict(
             evi_mmap_path    = evi_path,
             evi_shape        = evi_shape,
-            time_mmap_path   = time_path,
             t_nominal        = t_nominal,
             weights_template = weights_template,
             t_daily          = t_daily,
             precomputed_knots= precomputed_knots,
-            shared_time_axis = shared_time_axis,
             min_valid_points = effective_min_valid,
             value_min        = value_min,
             value_max        = value_max,
@@ -473,6 +370,7 @@ def smooth_evi_chunk_for_year(
             n_jobs=n_workers, prefer="processes", batch_size="auto"
         )
 
+        # use precomputed row-wise worker slices to distribute with kwargs to workers
         results = executor(
             delayed(_process_worker_slice)(
                 row_start=s, row_end=e, **worker_kwargs
@@ -525,8 +423,6 @@ def apply_thresholds_chunk(chunk: xr.DataArray,
 # per Bolton et al., 2020 eq.3 pg4
 def despike_timeseries_chunk(
         chunk: xr.DataArray,
-        # doy_data: xr.DataArray = None,
-        # composite_start_doys: np.ndarray = None,
         max_gap_days: int = 45,
         abs_threshold: float = 0.1,
         rel_threshold: float = 2.0,
@@ -552,8 +448,11 @@ def despike_timeseries_chunk(
     chunk_values = chunk.values  # (time, y, x)
 
     times = pd.to_datetime(chunk.time.values)
+    print(times)
+    if len(times) == 0:
+        return chunk
+        
     nominal_days = (times - times[0]).days.astype(np.float32)
-    use_pixel_doy = False
 
     # Spike detection
     spike_mask = np.zeros_like(chunk_values, dtype=bool)
@@ -610,8 +509,7 @@ def despike_timeseries_chunk(
     n_total = int((~chunk.isnull()).sum())
     if n_spikes > 0:
         pct = 100 * n_spikes / n_total if n_total > 0 else 0
-        print(f"  De-spiking: removed {n_spikes} spikes ({pct:.2f}%)"
-              f"{'  [per-pixel DOY]' if use_pixel_doy else '  [nominal gaps]'}")
+        print(f"  De-spiking: removed {n_spikes} spikes ({pct:.2f}%) [nominal gaps]}")
 
     return chunk_despiked
 
@@ -919,18 +817,14 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     chunk_post_threshold = chunk.copy(deep=True) if testing_mode else None
 
-    # TODO Step 2: Positive/Bright pixel filtering (blue and red bands)
+    # TODO Ste: Positive/Bright pixel filtering (blue and red bands)
 
-    # Step 3: Negative pixel filtering using DOY (EVI2 despiking - cloud shadows)
+    # Step 2: Negative pixel filtering using DOY (EVI2 despiking - cloud shadows)
     # - uses target year +/- 1 year, if edge case remove the non-existing year
-
     if despike:
-        print("Step3: Despiking")
-        # Pass DOY data through so gaps are per-pixel
+        print("Step2: Despiking")
         chunk = despike_timeseries_chunk(
             chunk,
-            #doy_data=doy_data,
-            #composite_start_doys=composite_start_doys,
             max_gap_days=despike_max_gap,
             abs_threshold=despike_abs_threshold,
             rel_threshold=despike_rel_threshold,
@@ -938,13 +832,11 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     chunk_post_despike = chunk.copy(deep=True) if testing_mode else None
 
-    # Step 4: apply penalized cubic spline interpolation
-    print("Step4: Apply spline")
+    # Step 3: apply penalized cubic spline interpolation
+    print("Step3: Apply spline")
     smoothed_daily = smooth_evi_chunk_for_year(
         chunk,
         target_year,
-        #doy_data=doy_data,
-        #composite_start_doys=composite_start_doys,
         testing_mode=testing_mode,
         _pool=_pool,
         n_jobs=n_jobs
@@ -957,7 +849,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     smoothed_year = smoothed_daily.where(smoothed_daily.time.dt.year == target_year)
     # print(smoothed_daily.time)
 
-    print("  Step5b: Calculate phenometrics")
+    print("  Step4: Calculate phenometrics")
     # print(f"Chunk time range: {smoothed_year.time.values[0]} to {smoothed_year.time.values[-1]}")
     # print(f"Number of timesteps: {len(smoothed_year.time)}")
     # print(f"Years in data: {sorted(set(smoothed_year.time.dt.year.values))}")
