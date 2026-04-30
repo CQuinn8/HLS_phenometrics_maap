@@ -431,10 +431,6 @@ def despike_timeseries_chunk(
     """
     Three-point de-spiking with optional per-pixel DOY awareness.
 
-    If doy_data + composite_start_doys are provided, gaps are computed
-    per-pixel using actual observation DOYs. Otherwise falls back to
-    nominal time coordinate gaps (original behaviour).
-
     Args:
         chunk:                DataArray (time, y, x) of EVI values
         doy_data:             DataArray (time, y, x) of DOY offsets within composite
@@ -448,10 +444,8 @@ def despike_timeseries_chunk(
     chunk_values = chunk.values  # (time, y, x)
 
     times = pd.to_datetime(chunk.time.values)
-    print(times)
     if len(times) == 0:
-        return chunk
-        
+        return chunk        
     nominal_days = (times - times[0]).days.astype(np.float32)
 
     # Spike detection
@@ -513,6 +507,44 @@ def despike_timeseries_chunk(
 
     return chunk_despiked
 
+def compute_scene_quality_metrics(
+    chunk: xr.DataArray,
+    target_year: int,
+) -> tuple[np.ndarray, np.ndarray]:
+
+    chunk_target_year = chunk.where(chunk.time.dt.year == target_year)
+    values = chunk_target_year.values                                   
+    doys   = chunk_target_year.time.dt.dayofyear.values.astype(np.float32) 
+
+    valid_mask  = ~np.isnan(values)                        
+    valid_count = valid_mask.sum(axis=0).astype(np.float32) 
+
+    # Mask invalid timesteps and compute per-pixel DOY range
+    doys_3d    = np.broadcast_to(doys[:, None, None], values.shape)
+    doys_valid = np.where(valid_mask, doys_3d, np.nan) 
+
+    doy_max = np.nanmax(doys_valid, axis=0)
+    doy_min = np.nanmin(doys_valid, axis=0)
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        mean_revisit = np.select(
+            condlist=[
+                valid_count > 1,    # normal case
+                valid_count == 1,   # single observation → fill with 1
+            ],
+            choicelist=[
+                (doy_max - doy_min) / (valid_count - 1),
+                np.ones_like(valid_count),
+            ],
+            default=np.nan,         # 0 valid observations
+        ).astype(np.float32)
+
+    quality_pixels = np.where(
+        valid_count > 0, valid_count, np.nan
+    ).astype(np.float32)
+
+    return mean_revisit, quality_pixels
+    
 
 def annual_phenometrics_chunk(chunk: xr.DataArray,
                               year: int = None,
@@ -561,9 +593,6 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
 
     senescence_rate = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
     senescence_rate_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-
-    mean_revisit_time = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    quality_pixels = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
     
     year_evi = chunk
     if len(year_evi.time) == 0:
@@ -608,7 +637,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                 min_idx = min_indices[yi, xi]
                 annual_min_doy[0, yi, xi] = nominal_doys[min_idx]
 
-    # 7. GREENUP, 8. DORMANCY, 9. AUC full, 10. AUC net, 11. GREENUP Inflection, 12. Senescences Inflection, 13. Revisit time
+    # 7. GREENUP, 8. DORMANCY, 9. AUC full, 10. AUC net, 11. GREENUP Inflection, 12. Senescences Inflection
     threshold = year_min + (amplitude * threshold_greenup_pct)
     greenup_threshold[0] = threshold
     for yi in range(ny):
@@ -632,11 +661,6 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
 
             pixel_evi_valid = pixel_evi[valid_pixel]
             pixel_doys_valid = pixel_doys[valid_pixel]
-
-            if len(pixel_doys_valid) > 1:
-                doy_gaps = np.diff(pixel_doys_valid)
-                mean_revisit_time[0, yi, xi] = np.mean(doy_gaps)
-                quality_pixels[0, yi, xi] = len(valid_pixel)
 
             # Greenup: first DOY exceeding threshold BEFORE peak
             pre_peak_mask = pixel_doys < pixel_max_doy
@@ -753,8 +777,6 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
         'greenup_rate_doy': greenup_rate_doy,
         'senescence_rate': senescence_rate,
         'senescence_rate_doy': senescence_rate_doy,
-        'mean_revisit_time': mean_revisit_time,
-        'quality_pixel_cnt': quality_pixels,
     }
 
 
@@ -817,8 +839,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     chunk_post_threshold = chunk.copy(deep=True) if testing_mode else None
 
-    # TODO Ste: Positive/Bright pixel filtering (blue and red bands)
-
+    # TODO Step: Positive/Bright pixel filtering (blue and red bands)
+    
     # Step 2: Negative pixel filtering using DOY (EVI2 despiking - cloud shadows)
     # - uses target year +/- 1 year, if edge case remove the non-existing year
     if despike:
@@ -829,11 +851,14 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             abs_threshold=despike_abs_threshold,
             rel_threshold=despike_rel_threshold,
         )
-
     chunk_post_despike = chunk.copy(deep=True) if testing_mode else None
 
-    # Step 3: apply penalized cubic spline interpolation
-    print("Step3: Apply spline")
+    # calculate scene revisit and quality pixels before the spline fit, 365 DOY data is generated
+    print("Step3: Scene quality metrics")
+    scene_mean_revisit, scene_quality_pixels = compute_scene_quality_metrics(chunk, target_year)
+    
+    # Step 4: apply penalized cubic spline interpolation
+    print("Step4: Apply spline")
     smoothed_daily = smooth_evi_chunk_for_year(
         chunk,
         target_year,
@@ -841,18 +866,11 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         _pool=_pool,
         n_jobs=n_jobs
     )
-    # print(f"   Smoothed: {smoothed_daily.shape} (daily, {target_year})")
     chunk_post_spline = smoothed_daily.copy(deep=True) if testing_mode else None
 
     # Step 5: Annual phenometrics
-    # print("Step5a: filter to target/center year")
     smoothed_year = smoothed_daily.where(smoothed_daily.time.dt.year == target_year)
-    # print(smoothed_daily.time)
-
-    print("  Step4: Calculate phenometrics")
-    # print(f"Chunk time range: {smoothed_year.time.values[0]} to {smoothed_year.time.values[-1]}")
-    # print(f"Number of timesteps: {len(smoothed_year.time)}")
-    # print(f"Years in data: {sorted(set(smoothed_year.time.dt.year.values))}")
+    print("  Step5: Calculate phenometrics")
     pheno = annual_phenometrics_chunk(
         smoothed_year,
         threshold_greenup_pct=threshold_greenup_pct,
@@ -879,14 +897,16 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         'greenup_rate': 'greenup_rate',
         'greenup_rate_doy': 'greenup_rate_doy',
         'senescence_rate': 'senescence_rate',
-        'senescence_rate_doy': 'senescence_rate_doy',
-        'mean_revisit_time': 'mean_revisit_time',
-        'quality_pixel_cnt': 'quality_pixel_cnt'
+        'senescence_rate_doy': 'senescence_rate_doy'
+        # 'mean_revisit_time': 'mean_revisit_time',
+        # 'quality_pixel_cnt': 'quality_pixel_cnt'
     }
     results = {}
-
     for internal_name, output_name in metric_mapping.items():
         results[f'{output_name}_{target_year}'] = pheno[internal_name][0]
+        
+    results[f'mean_revisit_time_{target_year}'] = scene_mean_revisit
+    results[f'quality_pixel_cnt_{target_year}'] = scene_quality_pixels
 
     if testing_mode:
         results['_intermediate'] = {
@@ -896,5 +916,4 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             'post_spline': chunk_post_spline,
         }
 
-        
     return results

@@ -24,6 +24,7 @@ echo "vCPUs: $NPROC  Workers: $N_WORKERS"
 tile="$1"
 target_year="$2"
 chunk_size=1220
+context_months=0
 
 OUTPUT_DIR=output
 INPUT_DIR=input
@@ -75,7 +76,7 @@ cmd=(
     --output_path="${OUTPUT_DIR}"
     --tile="${tile}"
     --target_year="${target_year}"
-    --context_months=12
+    --context_months="${context_months}"
     --chunk_size="${chunk_size}"
     --n_workers=$N_WORKERS
 )

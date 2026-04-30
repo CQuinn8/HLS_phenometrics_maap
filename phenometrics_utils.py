@@ -725,7 +725,6 @@ class ChunkedTimeSeriesReaderStreaming:
             print(f"Ingesting {len(context_years)} years: {context_years}")
 
             n_batches = (self.n_chunks + chunks_in_memory - 1) // chunks_in_memory
-            # year_outputs = {}  # {year: {} for year in target_years}
             out_datasets = {}  # metric -> rasterio DatasetWriter
             metric_valid_counts = {}  # metric -> int
             os.makedirs(self.output_dir, exist_ok=True)
@@ -753,7 +752,8 @@ class ChunkedTimeSeriesReaderStreaming:
                     print(f"    Date range: {evi_da_full.time.values[0]} to {evi_da_full.time.values[-1]}")
                     print(f"\n    Processing year {self.target_year}...")
                     start_context_year = pd.Timestamp(f"{self.start_year}-01-01")
-                    end_context_year = pd.Timestamp(f"{self.end_year}-01-01")
+                    end_context_year = pd.Timestamp(f"{self.end_year}-12-31")
+     
                     evi_context = evi_da_full.sel(time=slice(start_context_year, end_context_year))
                     doy_context = (doy_da_full.sel(time=slice(start_context_year, end_context_year))
                                    if doy_da_full is not None else None)
@@ -766,17 +766,18 @@ class ChunkedTimeSeriesReaderStreaming:
                         comp_start_context = None
 
                     # HANDLE FIRST AND LAST YEAR EDGE CASES FOR THE CONTEXT WINDOW BUFFERS
-                    is_first_year = self.target_year == self.start_year
-                    is_last_year = self.target_year == self.end_year
-                    if is_first_year or is_last_year:
-                        evi_context, doy_context, comp_start_context = self._pad_edge_year(
-                            evi_context=evi_context,
-                            doy_context=doy_context,
-                            comp_start_context=comp_start_context,
-                            is_first_year=is_first_year,
-                            is_last_year=is_last_year,
-                        )
-
+                    if context_months > 0:
+                        is_first_year = self.target_year == self.start_year
+                        is_last_year = self.target_year == self.end_year
+                        if is_first_year or is_last_year:
+                            evi_context, doy_context, comp_start_context = self._pad_edge_year(
+                                evi_context=evi_context,
+                                doy_context=doy_context,
+                                comp_start_context=comp_start_context,
+                                is_first_year=is_first_year,
+                                is_last_year=is_last_year,
+                            )
+ 
                     if comp_start_context is not None and len(comp_start_context) != len(evi_context.time):
                         print(f"    WARNING: comp_start mismatch: {len(comp_start_context)} vs {len(evi_context.time)}")
                         comp_start_context = comp_start_context[:len(evi_context.time)]
