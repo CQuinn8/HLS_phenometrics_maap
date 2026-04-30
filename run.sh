@@ -60,8 +60,8 @@ log "Stage 1: HLS download and Stage 2 EVI calculation"
 cmd_donwload=(
     uv run --no-dev "${basedir}/hls_download_scenes.py"
     --tile=$tile 
-    --start_date="$prev_year-01-01" 
-    --end_date="$next_year-12-31" 
+    --start_date=$target_year # "$prev_year-01-01" 
+    --end_date=$target_year # "$next_year-12-31" 
     --output_dir=$INPUT_DIR
     --N_WORKERS=8
 )
