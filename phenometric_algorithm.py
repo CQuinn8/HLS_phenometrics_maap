@@ -509,7 +509,7 @@ def despike_timeseries_chunk(
     n_total = int((~chunk.isnull()).sum())
     if n_spikes > 0:
         pct = 100 * n_spikes / n_total if n_total > 0 else 0
-        print(f"  De-spiking: removed {n_spikes} spikes ({pct:.2f}%) [nominal gaps]}")
+        print(f"  De-spiking: removed {n_spikes} spikes ({pct:.2f}%) [nominal gaps]")
 
     return chunk_despiked
 
