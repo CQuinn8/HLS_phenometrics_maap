@@ -40,11 +40,15 @@ GDAL_CONFIG = {
     "GDAL_HTTP_COOKIEFILE": str(Path.home() / "cookies.txt"),
     "GDAL_HTTP_COOKIEJAR": str(Path.home() / "cookies.txt"),
     "GDAL_HTTP_UNSAFESSL": "YES",
+    "GDAL_HTTP_TIMEOUT": "60",          # total request timeout (seconds)
+    "GDAL_HTTP_CONNECTTIMEOUT": "30",   # TCP connect timeout (seconds)
+    "GDAL_HTTP_LOW_SPEED_TIME": "30",   # if transfer rate drops below...
+    "GDAL_HTTP_LOW_SPEED_LIMIT": "1000",# 1KB/s for 30s abort
 }
 
 # LPCLOUD S3 CREDENTIAL REFRESH
 CREDENTIAL_REFRESH_SECONDS = 50 * 60
-
+SCENE_TIMEOUT_SECONDS = 10 * 60 
 
 class CredentialManager:
     """Thread-safe credential manager for S3 access"""
@@ -394,22 +398,23 @@ def process_hls(tile, start_date, end_date, save_dir, access_type="direct", N_WO
             ): row
             for row in rows
         }
-
         n_done = 0
         n_ok = 0
         n_skip = 0
         n_err = 0
-
         for future in as_completed(futures):
             row = futures[future]
             n_done += 1
             try:
-                status = future.result()
+                status = future.result(timeout=SCENE_TIMEOUT_SECONDS)
                 if status.startswith("OK"):
                     n_ok += 1
                 else:
                     n_skip += 1
                 print(f"[{n_done}/{n_scenes}] {status}")
+            except TimeoutError:
+                n_err += 1
+                print(f"[{n_done}/{n_scenes}] TIMEOUT {row.Sat} {row.Date} — scene took >{SCENE_TIMEOUT_SECONDS}s")
             except Exception as e:
                 n_err += 1
                 print(f"[{n_done}/{n_scenes}] ERROR {row.Sat} {row.Date}: {e}")

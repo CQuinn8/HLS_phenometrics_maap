@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
 
     # --- Optional ROI ---
     p.add_argument("--roi_file",         default=None,   type=Path)
-    p.add_argument("--tile_epsg",        default=32618,  type=int)
+    p.add_argument("--tile_epsg",        default=None,  type=int)
 
     # --- Runtime / memory ---
     p.add_argument("--chunk_size",       default=600,    type=int)
