@@ -47,7 +47,7 @@ unset PROJ_DATA
 
 # Logging
 LOG_FILE="${OUTPUT_DIR}/run_${tile}_${target_year}_$(date +%Y%m%d_%H%M%S).log"
-S3_LOG="s3://maap-ops-workspace/shared/colinquinn/logs/run_${tile}_${target_year}.log"
+S3_LOG="s3://maap-ops-workspace/shared/colinquinn/logs/${tile}_${target_year}.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 log() {
@@ -73,16 +73,16 @@ cmd_donwload=(
     --tile=$tile 
     --start_date="$prev_year-01-01" 
     --end_date="$next_year-12-31" 
-    --output_dir=$INPUT_DIR
+    --output_dir=$OUTPUT_DIR
     --N_WORKERS=$N_DOWNLOAD_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
-# /hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --N_WORKERS=8
+# hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --N_WORKERS=8
 
 log "Stage 3: Calculating phenometrics"
 cmd=(
     uv run --no-dev "${basedir}/run_phenometrics.py"
-    --data_dir="${INPUT_DIR}"
+    --data_dir="${OUTPUT_DIR}"
     --output_path="${OUTPUT_DIR}"
     --tile="${tile}"
     --target_year="${target_year}"

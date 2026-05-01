@@ -164,7 +164,7 @@ def smooth_evi_chunk_for_year(
     context_months:       int   = 12,
     min_valid_points:     int   = 30,
     min_valid_frac:       float = 0.30,
-    fill_low_data:        str   = "nan", # currently no gap filling, Bolton uses the context years to "grab" similar values but that's a weaker method 
+    fill_low_data:        str   = "nan",  # currently no gap filling, Bolton uses the context years to "grab" similar values but that's a weaker method 
     value_min:            float = -1.0,
     value_max:            float = 1.0,
     daily_output:         bool  = True,
@@ -272,8 +272,29 @@ def smooth_evi_chunk_for_year(
     # ----------------------------------------------------------------
     ref_date  = np.datetime64(f"{target_year - 1}-01-01")
     ref_year  = target_year - 1
+
+    # drop any all-NaN timesteps (esp case for tiles near coasts)
+    valid_mask = ~np.isnan(chunk.values).all(axis=(1, 2))
+    chunk_valid = chunk.isel(time=valid_mask)
+    
     t_nominal = ((fit_chunk.time.values - ref_date)
                  / np.timedelta64(1, "D")).astype(np.float64)
+
+    if len(t_nominal) == 0:
+        print(f"   WARNING: 0 valid timesteps for {target_year} current chunk;"
+              f"     chunk is entirely masked. Returning NaN output.")
+        daily_times = pd.date_range(f"{target_year}-01-01", f"{target_year}-12-31", freq="D")        
+        nan_data = np.full(
+            (len(daily_times), chunk.shape[1], chunk.shape[2]),
+            np.nan,
+            dtype=np.float32,
+        )
+        return xr.DataArray(
+            nan_data,
+            dims=["time", "y", "x"],
+            coords={"time": daily_times, "y": chunk.y, "x": chunk.x,},
+        )
+    
     # ----------------------------------------------------------------
     # 5. Output time axis - infill days so EVI2 is continuous across DOY of target-year
     # ----------------------------------------------------------------
@@ -400,7 +421,7 @@ def smooth_evi_chunk_for_year(
     gc.collect()
 
     # ----------------------------------------------------------------
-    # 13. Return as xr.DataArray with correct coordinates
+    # 13. Return as xr.DataArray
     # ----------------------------------------------------------------
     return xr.DataArray(
         smoothed_out,
@@ -548,8 +569,7 @@ def compute_scene_quality_metrics(
 
 def annual_phenometrics_chunk(chunk: xr.DataArray,
                               year: int = None,
-                              threshold_greenup_pct: float = 0.15,
-                              is_monthly: bool = False) -> dict[str, np.ndarray]:
+                              threshold_greenup_pct: float = 0.15) -> dict[str, np.ndarray]:
     """
     Calculate annual phenometrics for a chunk.
 
@@ -786,8 +806,6 @@ def full_pipeline_chunk(chunk: xr.DataArray,
                         min_evi_threshold: float = -1.0,
                         max_evi_threshold: float = 1.0,
                         threshold_greenup_pct: float = 0.15,
-                        is_monthly: bool = False,
-                        composite_start_doys: np.ndarray = None,
                         despike: bool = True,
                         despike_max_gap: int = 45,
                         despike_abs_threshold: float = 0.1,
@@ -814,8 +832,6 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         min_evi_threshold, max_evi_threshold: EVI thresholds
         interp_method: Interpolation method
         threshold_pct: Percentage of amplitude for greenup/dormancy
-        is_monthly: If True, adjust dates to month midpoint
-        composite_start_doys: Array of composite start DOY for 10day
         despike: Whether to apply de-spiking
         despike_max_gap: Max gap (days) between pre/post for despiking
         despike_abs_threshold: Absolute difference threshold for spike detection
@@ -826,6 +842,29 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     Returns:
         Dict with 2D arrays for each metric-year combination
     """
+    metric_mapping = {
+        'annual_mean': 'mean_evi',
+        'annual_max': 'max_evi',
+        'annual_min': 'min_evi',
+        'annual_max_doy': 'max_doy',
+        'annual_amplitude': 'amplitude',
+        'greenup_doy': 'greenup_doy',
+        'dormancy_doy': 'dormancy_doy',
+        'growing_season_length': 'growing_season_length',
+        'annual_min_doy': 'min_doy',
+        'greenup_evi': 'greenup_evi',
+        'dormancy_evi': 'dormancy_evi',
+        'greenup_threshold': 'greenup_threshold',
+        'auc_full': 'auc_full',
+        'auc_net': 'auc_net',
+        'greenup_rate': 'greenup_rate',
+        'greenup_rate_doy': 'greenup_rate_doy',
+        'senescence_rate': 'senescence_rate',
+        'senescence_rate_doy': 'senescence_rate_doy'
+        # 'mean_revisit_time': 'mean_revisit_time',
+        # 'quality_pixel_cnt': 'quality_pixel_cnt'
+    }
+    
     chunk_original = chunk.copy(deep=True) if testing_mode else None
 
     # Step 1: Threshold
@@ -856,7 +895,18 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     # calculate scene revisit and quality pixels before the spline fit, 365 DOY data is generated
     print("Step3: Scene quality metrics")
     scene_mean_revisit, scene_quality_pixels = compute_scene_quality_metrics(chunk, target_year)
-    
+
+    valid_timesteps = (~np.isnan(chunk.values)).any(axis=(1, 2)).sum()
+    if valid_timesteps == 0:
+        print(f"  WARNING: chunk has 0 valid timesteps for {target_year}. All metrics will be NaN — skipping spline and phenometrics.")
+        return {
+            f'{name}_{target_year}': np.full((chunk.shape[1], chunk.shape[2]), np.nan, dtype=np.float32)
+                for name in metric_mapping.values()
+        } | {
+            f'mean_revisit_time_{target_year}': scene_mean_revisit,
+            f'quality_pixel_cnt_{target_year}': scene_quality_pixels,
+        }
+        
     # Step 4: apply penalized cubic spline interpolation
     print("Step4: Apply spline")
     smoothed_daily = smooth_evi_chunk_for_year(
@@ -874,33 +924,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     pheno = annual_phenometrics_chunk(
         smoothed_year,
         threshold_greenup_pct=threshold_greenup_pct,
-        is_monthly=is_monthly,
         year=target_year,
     )
-
-    # Map internal names to output names
-    metric_mapping = {
-        'annual_mean': 'mean_evi',
-        'annual_max': 'max_evi',
-        'annual_min': 'min_evi',
-        'annual_max_doy': 'max_doy',
-        'annual_amplitude': 'amplitude',
-        'greenup_doy': 'greenup_doy',
-        'dormancy_doy': 'dormancy_doy',
-        'growing_season_length': 'growing_season_length',
-        'annual_min_doy': 'min_doy',
-        'greenup_evi': 'greenup_evi',
-        'dormancy_evi': 'dormancy_evi',
-        'greenup_threshold': 'greenup_threshold',
-        'auc_full': 'auc_full',
-        'auc_net': 'auc_net',
-        'greenup_rate': 'greenup_rate',
-        'greenup_rate_doy': 'greenup_rate_doy',
-        'senescence_rate': 'senescence_rate',
-        'senescence_rate_doy': 'senescence_rate_doy'
-        # 'mean_revisit_time': 'mean_revisit_time',
-        # 'quality_pixel_cnt': 'quality_pixel_cnt'
-    }
     results = {}
     for internal_name, output_name in metric_mapping.items():
         results[f'{output_name}_{target_year}'] = pheno[internal_name][0]
