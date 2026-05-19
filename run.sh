@@ -77,7 +77,7 @@ cmd_donwload=(
     --N_WORKERS=$N_DOWNLOAD_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
-# hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-1-31 --output_dir=temp_full_test_local --N_WORKERS=8
+# hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-01-31 --output_dir=temp_full_test_local --N_WORKERS=8
 
 log "Stage 3: Calculating phenometrics"
 cmd=(
@@ -90,7 +90,7 @@ cmd=(
     --chunk_size="${chunk_size}"
     --n_workers=$N_WORKERS
 )
-# run_phenometrics.py --data_dir=input --output_path=output --tile=18SUJ --target_year=2024 --context_months=12 --chunk_size=2200 --n_workers=16
+# run_phenometrics.py --data_dir=output --output_path=output --tile=18SUJ --target_year=2024 --context_months=12 --chunk_size=2200 --n_workers=16
 # run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily-subset-SERC/ --output_path=output-SERC --tile=18SUJ --target_year=2021 --context_months=12 --chunk_size=10 --n_workers=2
 UV_PROJECT="${basedir}" "${cmd[@]}"
 

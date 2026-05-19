@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "argparse>=1.4.0",
+    "bottleneck>=1.6.0",
     "dask>=2026.3.0",
     "distributed>=2026.3.0",
     "earthaccess>=0.17.0",

@@ -33,8 +33,10 @@ GDAL_CONFIG = {
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF,GPKG,SHP,SHX,PRJ,DBF,JSON,GEOJSON",
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
-    "GDAL_HTTP_MULTIPLEX": "YES",
-    "GDAL_HTTP_VERSION": "2",
+    # "GDAL_HTTP_MULTIPLEX": "YES",
+    # "GDAL_HTTP_VERSION": "2",
+    "GDAL_HTTP_MULTIPLEX": "No",
+    "GDAL_HTTP_VERSION": "1.1",
     "PYTHONWARNINGS": "ignore",
     "GDAL_NUM_THREADS": "ALL_CPUS",
     "GDAL_HTTP_COOKIEFILE": str(Path.home() / "cookies.txt"),
@@ -141,6 +143,7 @@ def saveGeoTiff(filename, data, template_file, access_type="direct", nodata=None
             profile.update({
                 "dtype": data.dtype,
                 "count": nband,
+                "driver":  "GTiff",
                 "height": data.shape[-2],
                 "width": data.shape[-1],
                 "compress": "lzw",
@@ -159,7 +162,7 @@ def saveGeoTiff(filename, data, template_file, access_type="direct", nodata=None
 
 def fetch_single_asset(asset_href: str, fill_value=SR_FILL, direct_bucket_access: bool = False):
     try:
-        rasterio_env = {}
+        rasterio_env = {**GDAL_CONFIG}
         if direct_bucket_access:
             rasterio_env["session"] = _credential_manager.get_session()
         with rio.Env(**rasterio_env):
@@ -313,26 +316,25 @@ def process_scene(
     return scene_bands
 
 
-def process_and_save_scene(row, tile: str, out_dir: str, access_type: str) -> str:
+def process_and_save_scene(
+    row, tile: str, out_dir: str, access_type: str
+) -> tuple[str, np.ndarray | None, np.ndarray | None]:
     """
-    Full pipeline for one scene: fetch → mask → EVI2 → save.
-
-    Returns a short status string for the caller to log.
+    Returns (status, pre_mask_array, post_mask_array)
+    pre_mask  : uint8 array — 1 where pixel was attempted (not fill/nodata)
+    post_mask : uint8 array — 1 where pixel passed quality mask
     """
     scene_id = f"{row.Sat} {row.Date}"
 
-    # --- Fetch all bands ---
     scene_bands = process_scene(row, access_type=access_type, bands=common_bands)
-
     missing = [b for b, a in scene_bands.items() if a is None]
     if missing:
-        return f"SKIP  {scene_id} — missing bands: {missing}"
+        return f"SKIP  {scene_id} — missing bands: {missing}", None, None
 
     fmask = scene_bands["Fmask"]
 
-    # --- Pixel quality mask ---
     is_negative = (
-        (scene_bands["Red"] < 0) | (scene_bands["NIR_Narrow"] < 0)            
+        (scene_bands["Red"] < 0) | (scene_bands["NIR_Narrow"] < 0)
         | (scene_bands["Blue"] < 0) | (scene_bands["Green"] < 0)
         | (scene_bands["SWIR1"] < 0) | (scene_bands["SWIR2"] < 0)
     )
@@ -342,30 +344,32 @@ def process_and_save_scene(row, tile: str, out_dir: str, access_type: str) -> st
         | ((fmask & (1 << QA_BIT["cloud shadow"])) > 0)
         | (fmask == QA_FILL)
         | is_negative
-    )
-    bad_pixel_mask = bad_pixel_mask | (
-        ((fmask & (1 << QA_BIT["water"])) > 0)
+        | ((fmask & (1 << QA_BIT["water"])) > 0)
         | ((fmask & (1 << QA_BIT["snowice"])) > 0)
     )
 
-    # --- EVI2 ---
-    red = scene_bands["Red"].astype(np.float32) * sr_scale
-    nir = scene_bands["NIR_Narrow"].astype(np.float32) * sr_scale
-    evi2 = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
+    # Compute masks for count TIFs
+    fmask_computed        = fmask.compute()
+    bad_computed          = bad_pixel_mask.compute()
+
+    pre_mask_arr  = (fmask_computed != QA_FILL).astype(np.uint8)    # valid data extent
+    post_mask_arr = (~bad_computed).astype(np.uint8)                # passed QA
+
+    # EVI2
+    red     = scene_bands["Red"].astype(np.float32) * sr_scale
+    nir     = scene_bands["NIR_Narrow"].astype(np.float32) * sr_scale
+    evi2    = 2.5 * (nir - red) / (nir + 2.4 * red + 1)
     evi2_out = da.where(bad_pixel_mask, np.nan, evi2).compute().astype(np.float32)
 
-    # --- Output path ---
-    scene_date = datetime.strptime(
-        os.path.basename(row.granule_path).split(".")[3][:7], "%Y%j"
-    )
+    scene_date = datetime.strptime(os.path.basename(row.granule_path).split(".")[3][:7], "%Y%j")
     scene_dir = os.path.join(out_dir, scene_date.strftime("%Y"))
     os.makedirs(scene_dir, exist_ok=True)
 
-    out_name = f"HLS.{row.Sat}.T{tile}.{scene_date.year}{scene_date.strftime('%j')}.2.0.EVI2.tif"
-    out_path = os.path.join(scene_dir, out_name)
+    out_name  = f"HLS.{row.Sat}.T{tile}.{scene_date.year}{scene_date.strftime('%j')}.2.0.EVI2.tif"
+    out_path  = os.path.join(scene_dir, out_name)
     saveGeoTiff(out_path, evi2_out, row.granule_path, nodata=np.nan)
 
-    return f"OK    {scene_id}: {out_path}"
+    return f"OK    {scene_id}: {out_path}", pre_mask_arr, post_mask_arr
 
 
 def process_hls(tile, start_date, end_date, save_dir, access_type="direct", N_WORKERS=1):
@@ -387,41 +391,73 @@ def process_hls(tile, start_date, end_date, save_dir, access_type="direct", N_WO
     n_scenes = len(rows)
     print(f"Submitting {n_scenes} scenes to {N_WORKERS} workers")
     
+    # Accumulators for quality pixels
+    from collections import defaultdict
+    pre_accum  = defaultdict(lambda: np.zeros(image_size, dtype=np.uint16))
+    post_accum = defaultdict(lambda: np.zeros(image_size, dtype=np.uint16))
+    template_path = rows[0].granule_path
+
     with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
         futures = {
             executor.submit(
                 process_and_save_scene,
-                row,
-                tile=tile,
-                out_dir=out_dir,
-                access_type=access_type,
+                row, tile=tile, out_dir=out_dir, access_type=access_type,
             ): row
             for row in rows
         }
-        n_done = 0
-        n_ok = 0
-        n_skip = 0
-        n_err = 0
+        n_done = n_ok = n_skip = n_err = 0
         for future in as_completed(futures):
-            row = futures[future]
+            row    = futures[future]
             n_done += 1
             try:
-                status = future.result(timeout=SCENE_TIMEOUT_SECONDS)
+                status, pre_arr, post_arr = future.result(timeout=SCENE_TIMEOUT_SECONDS)
                 if status.startswith("OK"):
                     n_ok += 1
+                    scene_year = row.Date.year
+                    pre_accum[scene_year]  += pre_arr
+                    post_accum[scene_year] += post_arr
                 else:
                     n_skip += 1
                 print(f"[{n_done}/{n_scenes}] {status}")
             except TimeoutError:
                 n_err += 1
-                print(f"[{n_done}/{n_scenes}] TIMEOUT {row.Sat} {row.Date} — scene took >{SCENE_TIMEOUT_SECONDS}s")
+                print(f"[{n_done}/{n_scenes}] TIMEOUT {row.Sat} {row.Date}")
             except Exception as e:
                 n_err += 1
                 print(f"[{n_done}/{n_scenes}] ERROR {row.Sat} {row.Date}: {e}")
 
-    print(
-        f"Done — {n_scenes} scenes: {n_ok} saved, {n_skip} skipped, {n_err} errors"
-    )
+    for year, pre in sorted(pre_accum.items()):
+        post     = post_accum[year]
+        year_dir = os.path.join(out_dir, str(year))
+        os.makedirs(year_dir, exist_ok=True)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            viable_pct = np.where(
+                pre > 0,
+                np.round(post.astype(np.float32) / pre * 100).astype(np.uint8),
+                np.uint8(0),
+            )
+
+        saveGeoTiff(
+            os.path.join(year_dir, f"HLS.T{tile}.{year}.PreMaskCount.tif"),
+            pre, template_path, nodata=65535,
+        )
+        saveGeoTiff(
+            os.path.join(year_dir, f"HLS.T{tile}.{year}.PostMaskCount.tif"),
+            post, template_path, nodata=65535,
+        )
+        saveGeoTiff(
+            os.path.join(year_dir, f"HLS.T{tile}.{year}.ViablePct.tif"),
+            viable_pct, template_path, nodata=255,
+        )
+        print(
+            f"  [{year}] quality TIFs saved — "
+            f"mean viable: {viable_pct[pre > 0].mean():.1f}%  "
+            f"scenes: {int(pre.max())}"
+        )
+
+    print(f"Done — {n_scenes} scenes: {n_ok} saved, {n_skip} skipped, {n_err} errors")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

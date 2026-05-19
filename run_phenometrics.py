@@ -146,7 +146,8 @@ def run_phenometrics(
 
     configured_pipeline = partial(
         full_pipeline_chunk,
-        apply_threshold=True
+        apply_threshold=True,
+        fill_snow_gaps=True,
     )
 
     reader.enter_processing_stage(
