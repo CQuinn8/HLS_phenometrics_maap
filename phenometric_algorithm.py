@@ -671,22 +671,27 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
             pixel_evi_valid = pixel_evi[valid_pixel]
             pixel_doys_valid = pixel_doys[valid_pixel]
 
-            # Greenup: first DOY exceeding threshold BEFORE peak
+            # Greenup: first DOY exceeding threshold BEFORE peak AND on ascending segment
             pre_peak_mask = pixel_doys < pixel_max_doy
             if pre_peak_mask.sum() > 0:
                 pre_peak_evi = pixel_evi[pre_peak_mask]
                 pre_peak_doys = pixel_doys[pre_peak_mask]
                 valid = ~np.isnan(pre_peak_evi)
                 
-                if valid.sum() > 0:
-                    pre_peak_evi = pre_peak_evi[valid]
+                if valid.sum() > 2:
+                    pre_peak_evi  = pre_peak_evi[valid]
                     pre_peak_doys = pre_peak_doys[valid]
-                    
+
+                    # Compute derivative on pre-peak valid obs
+                    pre_deriv = np.gradient(pre_peak_evi, pre_peak_doys)
                     above_thresh = pre_peak_evi >= pixel_threshold
-                    if above_thresh.any():
-                        first_above_idx = np.argmax(above_thresh)
-                        greenup_doy[0, yi, xi] = pre_peak_doys[first_above_idx]
-                        greenup_evi[0, yi, xi] = pre_peak_evi[first_above_idx]
+                    ascending    = pre_deriv > 0
+                    valid_greenup = above_thresh & ascending
+
+                    if valid_greenup.any():
+                        first_idx = np.argmax(valid_greenup)
+                        greenup_doy[0, yi, xi] = pre_peak_doys[first_idx]
+                        greenup_evi[0, yi, xi] = pre_peak_evi[first_idx]
 
             # Dormancy: first DOY below threshold AFTER peak
             post_peak_mask = pixel_doys > pixel_max_doy            
@@ -1007,23 +1012,14 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             f'mean_revisit_time_{target_year}': scene_mean_revisit,
             f'quality_pixel_cnt_{target_year}': scene_quality_pixels,
         }
-
-    # Step 4: Fill snow gaps using naive min EVI2 value (TODO: add snow ID logic)
-    if fill_snow_gaps:
-        print("Step 4: Snow gap fill", flush=True)
-        background_threshold = calc_obs_snow_background(chunk) 
-        target_obs  = chunk.sel(time=str(target_year))
-        is_valid = target_obs.notnull()             
-
-        has_any   = is_valid.any(dim="time")              
-        first_idx = is_valid.argmax(dim="time")            
-        last_idx  = (target_obs.sizes["time"] - 1 - is_valid.isel(time=slice(None, None, -1)).argmax(dim="time"))                                              
-        first_obs_doy = target_obs.time.dt.dayofyear.isel(time=first_idx).where(has_any)
-        last_obs_doy  = target_obs.time.dt.dayofyear.isel(time=last_idx).where(has_any)
         
-    # Step 5: apply penalized cubic spline interpolation
-    print("Step5: Apply spline")
+    # Step 4: apply penalized cubic spline interpolation
+    print("Step 4: Apply spline")
     use_context_months = get_context_months_from_gaps(chunk=chunk,target_year=target_year)    
+    fill_snow_gaps     = not use_context_months 
+    print(f"  use_context_months : {use_context_months}")
+    print(f"  fill_snow_gaps     : {fill_snow_gaps}")  
+    
     smoothed_daily = smooth_evi_chunk_for_year(
         chunk,
         target_year,
@@ -1035,6 +1031,17 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     chunk_post_spline = smoothed_daily.copy(deep=True) if testing_mode else None
     
     if fill_snow_gaps:
+        # Step 5: Fill snow gaps using naive min EVI2 value
+        print("Step 5: Snow gap fill", flush=True)
+        background_threshold = calc_obs_snow_background(chunk) 
+        target_obs  = chunk.sel(time=str(target_year))
+        is_valid = target_obs.notnull()
+        has_any   = is_valid.any(dim="time")              
+        first_idx = is_valid.argmax(dim="time")            
+        last_idx  = (target_obs.sizes["time"] - 1 
+                     - is_valid.isel(time=slice(None, None, -1)).argmax(dim="time"))                                              
+        first_obs_doy = target_obs.time.dt.dayofyear.isel(time=first_idx).where(has_any)
+        last_obs_doy  = target_obs.time.dt.dayofyear.isel(time=last_idx).where(has_any)
         smoothed_year = smoothed_daily.sel(time=str(target_year))
         daily_doy     = smoothed_year.time.dt.dayofyear
         bg            = background_threshold.drop_vars("quantile", errors="ignore")
