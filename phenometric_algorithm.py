@@ -2,17 +2,15 @@ import time
 from scipy.integrate import trapezoid
 import os
 import tempfile
-# import time as timer
 from joblib import Parallel, delayed
 
 import warnings
 warnings.filterwarnings('ignore', message='invalid value encountered in cast')
 
 from phenometrics_utils import *
-
 from scipy.interpolate import LSQUnivariateSpline
-
 import bottleneck
+
 
 def _make_worker_slices(ny: int, n_workers: int) -> list[tuple[int, int]]:
     """ Takes n_rows of data and n_workers and calculates slice coords for each worker """
@@ -516,6 +514,7 @@ def despike_timeseries_chunk(
         print(f"  De-spiking: removed {n_spikes} spikes ({pct:.2f}%) [nominal gaps]")
     
     return chunk_despiked
+
 
 def compute_scene_quality_metrics(
     chunk: xr.DataArray,

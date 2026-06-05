@@ -53,7 +53,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
     aws s3 cp "$LOG_FILE" "$S3_LOG" 2>/dev/null &
-}
+}s
 
 log "===== Pipeline Started ====="
 log "Tile:       $tile"
@@ -68,15 +68,15 @@ prev_year=$(( target_year - 1 ))
 next_year=$(( target_year + 1 ))
 
 log "Stage 1: HLS download and Stage 2 EVI calculation"
-cmd_donwload=(
-    uv run --no-dev "${basedir}/hls_download_scenes.py"
+cmd_download=(
+    uv run --no-dev "${basedir}/hls_download_scenes_earthdata.py"
     --tile=$tile 
     --start_date="$prev_year-01-01" 
     --end_date="$next_year-12-31" 
     --output_dir=$OUTPUT_DIR
     --N_WORKERS=$N_DOWNLOAD_WORKERS
 )
-UV_PROJECT="${basedir}" "${cmd_donwload[@]}"
+UV_PROJECT="${basedir}" "${cmd_download[@]}"
 # hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-01-31 --output_dir=temp_full_test_local --N_WORKERS=8
 
 log "Stage 3: Calculating phenometrics"
