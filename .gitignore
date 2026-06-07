@@ -1,9 +1,13 @@
 .ipynb_checkpoints
 __pycache__
 .python-version
+Untitled*
 
 # miscellaneous dirs
 input/
 old_build/
 temp_out*
 output
+testing_MS_LSP
+temp_full_test_local
+output-SERC

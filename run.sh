@@ -53,7 +53,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
     aws s3 cp "$LOG_FILE" "$S3_LOG" 2>/dev/null &
-}s
+}
 
 log "===== Pipeline Started ====="
 log "Tile:       $tile"
