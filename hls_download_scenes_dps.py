@@ -19,26 +19,16 @@ import glob
 import shutil
 import logging
 import argparse
-# from pathlib import Path
 
-# import subprocess
 import rasterio as rio
-from osgeo import gdal
 
 import boto3
 import earthaccess
 from maap.maap import MAAP
 from rasterio.session import AWSSession
-
-# import time
-# import fsspec
-# import s3fs
-# import csv
-# import pandas as pd
 import numpy as np
-# import xml.etree.ElementTree as ET
+
 from datetime import datetime
-# from urllib.parse import urlparse
 from collections import defaultdict
 
 # =============================================================================
