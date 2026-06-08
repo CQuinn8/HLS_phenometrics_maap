@@ -19,6 +19,8 @@ import glob
 import shutil
 import logging
 import argparse
+from collections import defaultdict
+from datetime import datetime
 
 import rasterio as rio
 
@@ -28,8 +30,6 @@ from maap.maap import MAAP
 from rasterio.session import AWSSession
 import numpy as np
 
-from datetime import datetime
-from collections import defaultdict
 
 # =============================================================================
 # CONFIG
@@ -46,10 +46,17 @@ from collections import defaultdict
 # S3_PREFIX = "shared/colinquinn/HLS_phenometrics/"
 
 # GDAL tuning
-gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-gdal.SetConfigOption("CPL_TMPDIR", "/tmp")
-gdal.SetConfigOption("AWS_REQUEST_PAYER", "requester")
-gdal.SetConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".TIF,.tif,.vrt")
+# gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+# gdal.SetConfigOption("CPL_TMPDIR", "/tmp")
+# gdal.SetConfigOption("AWS_REQUEST_PAYER", "requester")
+# gdal.SetConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".TIF,.tif,.vrt")
+GDAL_CONFIG = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_TMPDIR": "/tmp",
+    "AWS_REQUEST_PAYER": "requester",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".TIF,.tif,.vrt",
+}
+os.environ.update(GDAL_CONFIG)
 
 # =============================================================================
 # LOGGING
