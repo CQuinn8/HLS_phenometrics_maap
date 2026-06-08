@@ -70,11 +70,11 @@ next_year=$(( target_year + 1 ))
 log "Stage 1: HLS download and Stage 2 EVI calculation"
 cmd_download=(
     uv run --no-dev "${basedir}/hls_download_scenes_dps.py"
-    --tile=$tile 
+    --mgrs_tile=$tile 
     --start_date="$prev_year-01-01" 
     --end_date="$next_year-12-31" 
     --output_dir=$OUTPUT_DIR
-    --N_WORKERS=$N_DOWNLOAD_WORKERS
+    --n_workers=$N_DOWNLOAD_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_download[@]}"
 # hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-01-31 --output_dir=temp_full_test_local --N_WORKERS=8
