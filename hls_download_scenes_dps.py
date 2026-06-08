@@ -22,6 +22,8 @@ import argparse
 from collections import defaultdict
 from datetime import datetime
 
+from urllib.parse import urlparse
+
 import rasterio as rio
 
 import boto3
@@ -30,26 +32,42 @@ from maap.maap import MAAP
 from rasterio.session import AWSSession
 import numpy as np
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 # =============================================================================
 # CONFIG
 # =============================================================================
 
-# TMP_DIR = "/tmp/hls_work"
-# os.makedirs(TMP_DIR, exist_ok=True)
+L8_NAME_TO_INDEX = {
+    "Blue": "B02", "Green": "B03", "Red": "B04",
+    "NIR_Narrow": "B05", "SWIR1": "B06", "SWIR2": "B07", "Fmask": "Fmask",
+}
 
-# DPS harvest directory
-# OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp/dps_output")
-# os.makedirs(OUTPUT_DIR, exist_ok=True)
+S2_NAME_TO_INDEX = {
+    "Blue": "B02", "Green": "B03", "Red": "B04",
+    "NIR_Narrow": "B8A", "SWIR1": "B11", "SWIR2": "B12", "Fmask": "Fmask",
+}
 
-# S3_BUCKET = "maap-ops-workspace"
-# S3_PREFIX = "shared/colinquinn/HLS_phenometrics/"
+COMMON_BANDS = ["Blue", "Green", "Red", "NIR_Narrow", "SWIR1", "SWIR2", "Fmask"]
 
-# GDAL tuning
-# gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-# gdal.SetConfigOption("CPL_TMPDIR", "/tmp")
-# gdal.SetConfigOption("AWS_REQUEST_PAYER", "requester")
-# gdal.SetConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".TIF,.tif,.vrt")
+REQUIRED_HLS_BANDS = {
+    "L30": {"B02", "B03", "B04", "B05", "B06", "B07", "Fmask"},
+    "S30": {"B02", "B03", "B04", "B8A", "B11", "B12", "Fmask"},
+}
+# Bit positions in the HLS Fmask layer
+QA_BIT = {
+    "cloud": 1,
+    "adj_cloud": 2,
+    "cloud shadow": 3,
+    "snowice": 4,
+    "water": 5,
+}
+
+QA_FILL = 255
+SR_SCALE = 0.0001
+IMAGE_SIZE = (3660, 3660)
+
 GDAL_CONFIG = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "CPL_TMPDIR": "/tmp",
@@ -101,7 +119,112 @@ def configure_requester_pays():
     return maap, aws_session
 
 
-def download_hls_granule(mgrs_tile, start_date, end_date, output_dir):
+def cleanup_earthaccess_partials(download_dir):
+    """
+    Optionally, remove stale earthaccess partial_* files/directories from previous failed downloads.
+    Necesary for local testing
+    """
+    if not os.path.exists(download_dir):
+        return
+
+    for p in glob.glob(os.path.join(download_dir, "partial_*")):
+        try:
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                os.remove(p)
+            logger.info(f"Removed stale earthaccess partial path: {p}")
+        except Exception as e:
+            logger.warning(f"Could not remove stale partial path {p}: {e}")
+
+
+def is_required_hls_tif(url: str) -> bool:
+    base = os.path.basename(urlparse(url).path)
+
+    if not base.startswith("HLS."):
+        return False
+
+    if not base.lower().endswith(".tif"):
+        return False
+
+    parts = base.split(".")
+
+    # Expected:
+    # HLS.L30.T18SUJ.2024005T155218.v2.0.B04.tif
+    # HLS.S30.T18SUJ.2024005T155639.v2.0.B8A.tif
+    if len(parts) < 8:
+        return False
+
+    product = parts[1]   # L30 or S30
+    band = parts[-2]     # B02, B8A, Fmask, etc.
+
+    return product in REQUIRED_HLS_BANDS and band in REQUIRED_HLS_BANDS[product]
+
+
+def get_required_hls_links(granule):
+    try:
+        links = granule.data_links(access="external")
+    except TypeError:
+        links = granule.data_links()
+    except Exception:
+        links = []
+
+    required = []
+
+    for link in links:
+        if not isinstance(link, str):
+            continue
+
+        if not link.startswith("https://"):
+            continue
+
+        if is_required_hls_tif(link):
+            required.append(link)
+
+    return sorted(set(required))
+
+
+def get_scene_id_from_link(url: str) -> str:
+    base = os.path.basename(urlparse(url).path)
+    return ".".join(base.split(".")[:6])
+
+
+def get_granule_safe_id(granule, fallback_index):
+    try:
+        links = granule.data_links()
+        for link in links:
+            base = os.path.basename(urlparse(link).path)
+            if base.startswith("HLS.") and ".tif" in base:
+                return ".".join(base.split(".")[:6])
+    except Exception:
+        pass
+
+    return f"granule_{fallback_index:05d}"
+
+
+def download_one_granule_required_bands(granule, output_dir, index):
+    links = get_required_hls_links(granule)
+
+    if len(links) == 0:
+        return []
+
+    scene_id = get_scene_id_from_link(links[0])
+    scene_dir = os.path.join(output_dir, "_hls_downloads", scene_id)
+    os.makedirs(scene_dir, exist_ok=True)
+
+    files = earthaccess.download(
+        links,
+        local_path=scene_dir,
+        pqdm_kwargs={
+            "n_jobs": 1,
+            "disable": True,
+        },
+    )
+
+    return [str(f) for f in files]
+
+
+def download_hls_granule(mgrs_tile, start_date, end_date, output_dir, n_workers):
     # need to deal with EarthAccess credentials on DPS
     logger.info(f"Downloading HLS scenes for {mgrs_tile} from {start_date} to {end_date}")
     os.makedirs(output_dir, exist_ok=True)
@@ -120,10 +243,36 @@ def download_hls_granule(mgrs_tile, start_date, end_date, output_dir):
         )
 
     # 2. DOWNLOAD
-    downloaded_files = earthaccess.download(
-        results,
-        local_path=output_dir
-    )
+    logger.info(f"Found {len(results)} HLS granules")
+    download_root = os.path.join(output_dir, "_hls_downloads")
+    os.makedirs(download_root, exist_ok=True)
+
+    downloaded_files = []
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {
+            executor.submit(
+                download_one_granule_required_bands,
+                granule,
+                output_dir,
+                i,
+            ): i
+            for i, granule in enumerate(results, start=1)
+        }
+
+        for future in as_completed(futures):
+            i = futures[future]
+
+            try:
+                files = future.result()
+                downloaded_files.extend(files)
+                logger.info(f"[{i}/{len(results)}] downloaded {len(files)} target files")
+
+            except Exception as e:
+                logger.error(f"[{i}/{len(results)}] download failed: {e}")
+                raise
+
+    if len(downloaded_files) == 0:
+        raise RuntimeError("Download phase resulted in no files")
 
     logger.info(f"Downloaded {len(downloaded_files)} files")
 
@@ -150,29 +299,6 @@ def save_geotiff(filename, data, template_file, nodata=None):
 # =============================================================================
 # PROCESS HLS
 # =============================================================================
-L8_NAME_TO_INDEX = {
-    "Blue": "B02", "Green": "B03", "Red": "B04",
-    "NIR_Narrow": "B05", "SWIR1": "B06", "SWIR2": "B07", "Fmask": "Fmask",
-}
-S2_NAME_TO_INDEX = {
-    "Blue": "B02", "Green": "B03", "Red": "B04",
-    "NIR_Narrow": "B8A", "SWIR1": "B11", "SWIR2": "B12", "Fmask": "Fmask",
-}
-COMMON_BANDS = ["Blue", "Green", "Red", "NIR_Narrow", "SWIR1", "SWIR2", "Fmask"]
-
-# Bit positions in the HLS Fmask layer
-QA_BIT = {
-    "cloud": 1,
-    "adj_cloud": 2,
-    "cloud shadow": 3,
-    "snowice": 4,
-    "water": 5,
-}
-
-QA_FILL = 255
-SR_SCALE = 0.0001
-IMAGE_SIZE = (3660, 3660)
-
 def process_and_save_scene(scene_id, scene_files, out_dir):
     try:
         logger.info(f"Processing scene: {scene_id}")
@@ -332,18 +458,6 @@ def upload_to_s3(local_file, mgrs_tile, date):
 
     logger.info(f"Uploaded s3://{S3_BUCKET}/{key}")
 
-
-# =============================================================================
-# CLEANUP
-# =============================================================================
-
-def cleanup():
-    logger.info("Cleaning temporary files")
-
-    if os.path.exists(TMP_DIR):
-        shutil.rmtree(TMP_DIR, ignore_errors=True)
-
-
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -354,14 +468,11 @@ def process_hls_tile(mgrs_tile, start_date, end_date, output_dir, n_workers = 1)
         maap, aws_session = configure_requester_pays()
 
         # 1. Download HLS reference granules
-        hls_files = download_hls_granule(mgrs_tile, start_date, end_date, output_dir)
-        # sorted_hls = sorted(hls_granules, key=lambda x: os.path.basename(x))
-        # ref_path = sorted_hls[0]
+        hls_files = download_hls_granule(mgrs_tile, start_date, end_date, output_dir, n_workers)
         scenes = defaultdict(list)
         for f in hls_files:
             # Group files by their granule ID (e.g., HLS.L30.T18SUJ.2024005.v2.0)
-            # scene_id = ".".join(os.path.basename(f).split('.')[:6])
-            # scenes[scene_id].append(f)
+
             f = str(f)
             base = os.path.basename(f)
             if not base.startswith("HLS."):
@@ -381,13 +492,6 @@ def process_hls_tile(mgrs_tile, start_date, end_date, output_dir, n_workers = 1)
         post_accum = defaultdict(lambda: np.zeros(IMAGE_SIZE, dtype=np.uint16))
 
         # 2. Run HLS workflow
-        # output_files = process_and_save_scene(
-        #     mgrs_tile,
-        #     start_date,
-        #     end_date,
-        #     hls_files[0]
-        # )
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         SCENE_TIMEOUT_SECONDS = 10 * 60
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             future_to_scene = {
@@ -435,29 +539,13 @@ def process_hls_tile(mgrs_tile, start_date, end_date, output_dir, n_workers = 1)
             print(f"  - Saved stats for {year}. Mean viable pixels: {viable_pct[pre > 0].mean():.1f}%")
 
         print(f"\nDone — {len(scenes)} scenes processed: {n_ok} saved, {n_skip_err} skipped or failed.")
-
-        # 3. Stage outputs for DPS collection
-        # # Upload to S3
-        # upload_to_s3(stats_sr, mgrs_tile, date)
-        # upload_to_s3(stats_clear_sr, mgrs_tile, date)
-        # uploaded = upload_all_outputs_to_s3(
-        #     mgrs_tile,
-        #     date
-        # )
-        # logger.info("Uploaded outputs:")
-        # for u in uploaded:
-        #     logger.info(u)
+        
         logger.info("PROCESSING COMPLETE")
-        # upload_to_s3(log_file, mgrs_tile, start_date, end_date)
+
 
 
     except Exception as e:
         logger.exception("PROCESSING FAILED")
-        # try:
-        #     upload_to_s3(log_file, mgrs_tile, date)
-        # except Exception:
-        #     pass
-        # cleanup()
         sys.exit(1)
 
     # cleanup()
@@ -497,4 +585,3 @@ if __name__ == "__main__":
         output_dir=f"{output_dir}/{mgrs_tile}",
         n_workers=args.n_workers,
     )
-
