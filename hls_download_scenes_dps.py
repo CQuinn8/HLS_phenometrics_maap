@@ -343,16 +343,26 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
         pre_mask_arr = (fmask != QA_FILL).astype(np.uint8)
         post_mask_arr = (~bad_pixel_mask).astype(np.uint8)
 
-        # 5. Calculate EVI2
+        # 5. Calculate SVIs
         red = bands_data["Red"].astype(np.float32) * SR_SCALE
         nir = bands_data["NIR_Narrow"].astype(np.float32) * SR_SCALE
+        green = bands_data["Green"].astype(np.float32) * SR_SCALE
 
         with np.errstate(divide='ignore', invalid='ignore'):
             evi2 = 2.5 * (nir - red) / (nir + 2.4 * red + 1.0)
+            ndgi = 0.69 * (green + 0.31 * nir - red) / (green + 0.31 * nir + red)
+            ndvi = (nir - red) / (nir + red)
+            
         evi2[bad_pixel_mask] = np.nan
         evi2 = evi2.astype(np.float32)
 
-        # 6. Save the final EVI2 GeoTIFF
+        ndgi[bad_pixel_mask] = np.nan
+        ndgi = ndgi.astype(np.float32)
+
+        ndvi[bad_pixel_mask] = np.nan
+        ndvi = ndvi.astype(np.float32)
+
+        # 6. Save the final SVI GeoTIFF
         parts = scene_id.split(".")
 
         # scene_id example:
@@ -365,14 +375,16 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
         version = ".".join(parts[4:6]).removeprefix("v")
         scene_date = datetime.strptime(date_julian, "%Y%j")
         scene_year_dir = os.path.join(out_dir, str(scene_date.year))
+        
         os.makedirs(scene_year_dir, exist_ok=True)
-
-        out_name = f"HLS.{sat_type}.{tile_id}.{date_julian}.{version}.EVI2.tif"
+        out_name_base = f"HLS.{sat_type}.{tile_id}.{date_julian}.{version}." # e.g., EVI2.tif 
         out_path = os.path.join(scene_year_dir, out_name)
         print(f"Outpath:{out_path}")
 
         template_file = scene_files[0]
-        save_geotiff(out_path, evi2, template_file, nodata=np.nan)
+        save_geotiff(os.path.join(out_path, "EVI2.tif"), evi2, template_file, nodata=np.nan)
+        save_geotiff(os.path.join(out_path, "NDGI.tif"), ndgi, template_file, nodata=np.nan)
+        save_geotiff(os.path.join(out_path, "NDVI.tif"), ndvi, template_file, nodata=np.nan)
         return f"OK    {scene_id}", pre_mask_arr, post_mask_arr
 
     except Exception as e:
