@@ -378,7 +378,7 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
         
         os.makedirs(scene_year_dir, exist_ok=True)
         out_name_base = f"HLS.{sat_type}.{tile_id}.{date_julian}.{version}." # e.g., EVI2.tif 
-        out_path = os.path.join(scene_year_dir, out_name)
+        out_path = os.path.join(scene_year_dir, out_name_base)
         print(f"Outpath:{out_path}")
 
         template_file = scene_files[0]

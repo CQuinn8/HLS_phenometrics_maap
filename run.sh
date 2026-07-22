@@ -77,7 +77,7 @@ cmd_download=(
     --n_workers=$N_DOWNLOAD_WORKERS
 )
 UV_PROJECT="${basedir}" "${cmd_download[@]}"
-# hls_download_scenes.py --tile=18SUJ --start_date=2020-01-01 --end_date=2020-01-31 --output_dir=temp_full_test_local --N_WORKERS=8
+# hls_download_scenes_dps.py --mgrs_tile=18SUJ --start_date=2024-01-01 --end_date=2024-01-31 --output_dir=temp_test --n_workers=2
 
 log "Stage 3: Calculating phenometrics"
 cmd=(
