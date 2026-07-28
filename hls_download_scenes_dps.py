@@ -382,9 +382,9 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
         print(f"Outpath:{out_path}")
 
         template_file = scene_files[0]
-        save_geotiff(os.path.join(out_path, "EVI2.tif"), evi2, template_file, nodata=np.nan)
-        save_geotiff(os.path.join(out_path, "NDGI.tif"), ndgi, template_file, nodata=np.nan)
-        save_geotiff(os.path.join(out_path, "NDVI.tif"), ndvi, template_file, nodata=np.nan)
+        save_geotiff(f"{out_path}EVI2.tif", evi2, template_file, nodata=np.nan)
+        save_geotiff(f"{out_path}NDGI.tif", ndgi, template_file, nodata=np.nan)
+        save_geotiff(f"{out_path}NDVI.tif", ndvi, template_file, nodata=np.nan)
         return f"OK    {scene_id}", pre_mask_arr, post_mask_arr
 
     except Exception as e:
