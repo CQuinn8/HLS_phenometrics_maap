@@ -41,12 +41,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 L8_NAME_TO_INDEX = {
     "Blue": "B02", "Green": "B03", "Red": "B04",
-    "NIR_Narrow": "B05", "SWIR1": "B06", "SWIR2": "B07", "Fmask": "Fmask",
+    "NIR_Narrow": "B05", # 0.86um
+    "SWIR1": "B06",      # 1.61 um
+    "SWIR2": "B07",      # 2.2 um
+    "Fmask": "Fmask",
 }
 
 S2_NAME_TO_INDEX = {
     "Blue": "B02", "Green": "B03", "Red": "B04",
-    "NIR_Narrow": "B8A", "SWIR1": "B11", "SWIR2": "B12", "Fmask": "Fmask",
+    "NIR_Narrow": "B8A", # 0.86um
+    "SWIR1": "B11",      # 1.61 um
+    "SWIR2": "B12",      # 2.20um (2A) and 2.19um (2B)
+    "Fmask": "Fmask",
 }
 
 COMMON_BANDS = ["Blue", "Green", "Red", "NIR_Narrow", "SWIR1", "SWIR2", "Fmask"]
@@ -347,11 +353,13 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
         red = bands_data["Red"].astype(np.float32) * SR_SCALE
         nir = bands_data["NIR_Narrow"].astype(np.float32) * SR_SCALE
         green = bands_data["Green"].astype(np.float32) * SR_SCALE
+        swir1 = bands_data["SWIR1"].astype(np.float32) * SR_SCALE
 
         with np.errstate(divide='ignore', invalid='ignore'):
             evi2 = 2.5 * (nir - red) / (nir + 2.4 * red + 1.0)
             ndgi = 0.69 * (green + 0.31 * nir - red) / (green + 0.31 * nir + red)
             ndvi = (nir - red) / (nir + red)
+            ndfsi = (nir - swir1) / (nir + swir1) # Wang et al., 2015: https://doi.org/10.3390/rs71215882 (swir1 == swir2 in eq 1)
             
         evi2[bad_pixel_mask] = np.nan
         evi2 = evi2.astype(np.float32)
@@ -361,6 +369,9 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
 
         ndvi[bad_pixel_mask] = np.nan
         ndvi = ndvi.astype(np.float32)
+
+        ndfsi[bad_pixel_mask] = np.nan
+        ndfsi = ndfsi.astype(np.float32)
 
         # 6. Save the final SVI GeoTIFF
         parts = scene_id.split(".")
@@ -385,6 +396,7 @@ def process_and_save_scene(scene_id, scene_files, out_dir):
         save_geotiff(f"{out_path}EVI2.tif", evi2, template_file, nodata=np.nan)
         save_geotiff(f"{out_path}NDGI.tif", ndgi, template_file, nodata=np.nan)
         save_geotiff(f"{out_path}NDVI.tif", ndvi, template_file, nodata=np.nan)
+        save_geotiff(f"{out_path}NDFSI.tif", ndfsi, template_file, nodata=np.nan)
         return f"OK    {scene_id}", pre_mask_arr, post_mask_arr
 
     except Exception as e:
