@@ -142,11 +142,13 @@ def run_phenometrics(
         context_months=context_months,
         target_year=target_year,
         default_crs=tile_epsg,
+        use_ndfsi=True
     )
 
     configured_pipeline = partial(
         full_pipeline_chunk,
         apply_threshold=True,
+        smoother="spline",
     )
 
     reader.enter_processing_stage(

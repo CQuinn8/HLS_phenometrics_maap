@@ -28,7 +28,7 @@ class ProcessingConfig:
     """Configuration for EVI processing pipeline."""
     base_path: Path
     tile_id: str
-    evi_pattern: str = "*.EVI2.tif"  # glob pattern for EVI files
+    # evi_pattern: str = f"*.{svi}.tif"  # glob pattern for EVI files
 
     # Date patterns for different cadences (extracts from filename/dirname)
     # DATE_PATTERNS: dict = field(default_factory=lambda: {
@@ -73,13 +73,15 @@ class EVIScene:
     doy: int
     year: int
     filepath: Path
+    ndfsi_filepath: Path = None
 
     def to_dict(self):
         return {
             'date': self.date.isoformat(),
             'doy': self.doy,
             'year': self.year,
-            'filepath': str(self.filepath)
+            'filepath': str(self.filepath),
+            'ndfsi_filepath': str(self.ndfsi_filepath) if self.ndfsi_filepath else None,
         }
 
     @classmethod
@@ -88,7 +90,8 @@ class EVIScene:
             date=datetime.fromisoformat(d['date']),
             doy=d['doy'],
             year=d['year'],
-            filepath=Path(d['filepath'])
+            filepath=Path(d['filepath']),
+            ndfsi_filepath=Path(d['ndfsi_filepath']) if d.get('ndfsi_filepath') else None,
         )
 
 
@@ -108,7 +111,7 @@ def parse_date_from_filename(filename: str, pattern: str, cadence: str = 'daily'
         return None
 
 
-def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True) -> list[EVIScene]:
+def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True, svi: str = "EVI2") -> list[EVIScene]:
     """
     Discover all existing EVI files and build scene index.
     Handles companion DOY files for composite products.
@@ -117,7 +120,7 @@ def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True) -> lis
     print(config.evi_dir)
 
     glob_method = config.evi_dir.rglob if recursive else config.evi_dir.glob
-    evi_files = sorted(glob_method("*.EVI2.tif"))
+    evi_files = sorted(glob_method(f"*.{svi}.tif"))
 
     print(f"Found {len(evi_files)} EVI files in {config.evi_dir}")
 
@@ -134,8 +137,10 @@ def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True) -> lis
             date=date_obj,
             doy=date_obj.timetuple().tm_yday,
             year=date_obj.year,
-            filepath=filepath
+            filepath=filepath,
+            ndfsi_filepath=filepath.with_suffix('').with_suffix('').with_name(filepath.name.replace(f'.{svi}.tif', '.NDFSI.tif'))
         )
+
         scenes.append(scene)
 
     scenes.sort(key=lambda s: s.date)
@@ -148,31 +153,11 @@ def discover_evi_scenes(config: ProcessingConfig, recursive: bool = True) -> lis
     return scenes
 
 
-def save_scene_index(scenes: list[EVIScene], config: ProcessingConfig):
-    """Save scene index to JSON for quick re-loading."""
-    if not scenes:
-        print("No scenes to save")
-        return
-
-    index = {
-        # 'cadence': config.cadence,  # monthly, 10day, daily
-        'tile_id': config.tile_id,  # MRGS code (18SUJ)
-        'n_scenes': len(scenes),  # number of unique observations
-        'date_range': [scenes[0].date.isoformat(), scenes[-1].date.isoformat()],  # simple filename based date range
-        'scenes': [s.to_dict() for s in scenes]  # list of all scenes using EVIScene class
-    }
-
-    with open(config.index_file, 'w') as f:
-        json.dump(index, f, indent=2)
-
-    print(f"Saved index to {config.index_file}")
-    
-
 def build_scene_index(config: ProcessingConfig,
-                      recursive: bool = True) -> list[EVIScene]:
-    """Build EVI2 scene index"""
-    scenes = discover_evi_scenes(config, recursive=recursive)
-    save_scene_index(scenes, config)
+                      recursive: bool = True,
+                      svi: str = "EVI2") -> list[EVIScene]:
+    """Build SVI scene index"""
+    scenes = discover_evi_scenes(config, recursive=recursive, svi=svi)
     return scenes
 
 
@@ -220,6 +205,7 @@ class ChunkedTimeSeriesReaderStreaming:
             output_dir: Path = None,
             context_months: int = None,
             target_year: int = None,
+            use_ndfsi: bool = True,
     ):
         """
         Args:
@@ -248,6 +234,7 @@ class ChunkedTimeSeriesReaderStreaming:
         self.output_dir = output_dir
         self.context_months = context_months
         self.target_year = target_year
+        self.use_ndfsi = use_ndfsi
 
 
         if not self.output_dir.exists():
@@ -272,6 +259,7 @@ class ChunkedTimeSeriesReaderStreaming:
         self._compute_chunk_slices()
         self._estimate_memory()
 
+        
     def _initalize_spatial_metadata(self, scene):
 
         with rxr.open_rasterio(scene.filepath) as ds:
@@ -353,6 +341,7 @@ class ChunkedTimeSeriesReaderStreaming:
         if self.use_doy_files:
             print(f"  DOY nodata: {self._doy_nodata} (hardcoded)")
 
+    
     def _ensure_crs(self, ds):
         """Ensure dataset has a valid CRS, assign default if missing/invalid."""
         try:
@@ -370,6 +359,7 @@ class ChunkedTimeSeriesReaderStreaming:
             print(f"  Warning: CRS error ({e}), using default: {self.default_crs}")
             return ds.rio.write_crs(self.default_crs)
 
+    
     def _group_scenes_by_date(self):
         """Group scenes by date to handle duplicates."""
         from collections import defaultdict
@@ -422,6 +412,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         self.dates = np.array([pd.Timestamp(d) for d in self.unique_dates])
 
+    
     def _extract_composite_start_doys(self):
         """Extract the start DOY of each composite from the filename."""
         import re
@@ -452,6 +443,7 @@ class ChunkedTimeSeriesReaderStreaming:
         print(f"Extracted {len(self.composite_start_doys)} composite start DOYs")
         print(f"  Sample: {self.composite_start_doys[:5]}...")
 
+    
     def _identify_valid_date_window(self) -> tuple[int, int]:
         """
         Compute the clamped [start_year, end_year] reader window and detect
@@ -476,6 +468,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         return start_year, end_year
 
+    
     def _compute_chunk_slices(self):
         cy, cx = self.chunk_size
         self.chunk_slices = []
@@ -491,6 +484,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         self.n_chunks = len(self.chunk_slices)
 
+    
     def _estimate_memory(self):
         n_dates = len(self.unique_dates)
         cy, cx = self.chunk_size
@@ -506,6 +500,7 @@ class ChunkedTimeSeriesReaderStreaming:
         print(f"Chunks: {self.n_chunks} ({cy}x{cx})")
         print(f"Memory per chunk: {chunk_mem / 1e6:.1f} MB")
 
+    
     def _load_scene_fast(self, scene) -> tuple[np.ndarray | None, np.ndarray | None]:
         """
         Fast scene loading using pre-computed window.
@@ -528,7 +523,7 @@ class ChunkedTimeSeriesReaderStreaming:
             print(f"  Error reading {scene.filepath.name}: {e}")
             return None, None
 
-        # DOY file
+        # DOY 
         doy_data = None
         # if self.use_doy_files and scene.doy_filepath is not None and scene.doy_filepath.exists():
         #     try:
@@ -540,29 +535,48 @@ class ChunkedTimeSeriesReaderStreaming:
         #     except Exception as e:
         #         print(f"  Warning: DOY read failed {scene.doy_filepath.name}: {e}")
 
-        return evi_data, doy_data
+        # NDFSI
+        ndfsi_data = None
+        if self.use_ndfsi and scene.ndfsi_filepath is not None and scene.ndfsi_filepath.exists():
+            try:
+                with rio.open(scene.ndfsi_filepath) as src:
+                    ndfsi_data = (
+                        src.read(1, window=self._roi_window)
+                        if self._roi_window is not None
+                        else src.read(1)
+                    ).astype(np.float32)
+                    if src.nodata is not None:
+                        ndfsi_data[ndfsi_data == src.nodata] = np.nan
+            except Exception as e:
+                print(f"  Warning: NDFSI read failed {scene.ndfsi_filepath.name}: {e}")
 
-    def _load_date_fast(self, date) -> tuple[np.ndarray | None, np.ndarray | None]:
+        return evi_data, doy_data, ndfsi_data  
+
+        
+    def _load_date_fast(self, date) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         """Load and combine all scenes for a date using fast reader."""
         scene_list = self.scenes_by_date[date]
 
         if len(scene_list) == 1:
             return self._load_scene_fast(scene_list[0])
 
-        evi_arrays = []
-        doy_arrays = []
-        for i, scene in enumerate(scene_list):
-            evi_data, doy_data = self._load_scene_fast(scene)
+        evi_arrays, doy_arrays, ndfsi_arrays = [], [], []
+        for scene in scene_list:
+            evi_data, doy_data, ndfsi_data = self._load_scene_fast(scene)
             if evi_data is not None:
                 evi_arrays.append(evi_data)
-                if doy_data is not None:
-                    doy_arrays.append(doy_data)
-
+            if doy_data is not None:
+                doy_arrays.append(doy_data)
+            if ndfsi_data is not None:
+                ndfsi_arrays.append(ndfsi_data)
+            
         if len(evi_arrays) == 0:
-            return None, None
+            return None, None, None
 
         if len(evi_arrays) == 1:
-            return evi_arrays[0], doy_arrays[0] if doy_arrays else None
+            return (evi_arrays[0], 
+                    doy_arrays[0] if doy_arrays else None,
+                    ndfsi_arrays[0] if ndfsi_arrays else None)
 
         # Combine
         stacked_evi = np.stack(evi_arrays, axis=0)
@@ -573,13 +587,12 @@ class ChunkedTimeSeriesReaderStreaming:
         else:
             combined_evi = np.nanmean(stacked_evi, axis=0)
 
-        combined_doy = None
-        if doy_arrays:
-            stacked_doy = np.stack(doy_arrays, axis=0)
-            combined_doy = np.nanmean(stacked_doy, axis=0)
+        combined_doy = np.nanmean(np.stack(doy_arrays), axis=0) if doy_arrays else None
+        combined_ndfsi = np.nanmax(np.stack(ndfsi_arrays), axis=0) if ndfsi_arrays else None
+        
+        return combined_evi, combined_doy, combined_ndfsi
 
-        return combined_evi, combined_doy
-
+    
     def load_chunk(self, chunk_idx: int):
         """Load a single chunk using fast windowed reads."""
         import time
@@ -593,6 +606,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         shape = (n_dates, chunk_ny, chunk_nx)
         evi_data = np.full(shape, np.nan, dtype=np.float32)
+        ndfsi_data = np.full(shape, np.nan, dtype=np.float32)
         has_doy = False # self.has_doy_files and self.use_doy_files
         doy_data = np.full(shape, np.nan, dtype=np.float32) if has_doy else None
 
@@ -600,14 +614,11 @@ class ChunkedTimeSeriesReaderStreaming:
             if i % 25 == 0:
                 print(f"  Loading date {i + 1}/{n_dates}")
 
-            evi_arr, doy_arr = self._load_date_fast(date)
+            evi_arr, doy_arr, ndfsi_arr = self._load_date_fast(date)
+            if evi_arr   is not None: evi_data[i]   = evi_arr[y_slice, x_slice]
+            if doy_arr   is not None: doy_arr[i]    = doy_arr[y_slice, x_slice]    
+            if ndfsi_arr is not None: ndfsi_data[i] = ndfsi_arr[y_slice, x_slice] 
 
-            if evi_arr is not None:
-                evi_data[i] = evi_arr[y_slice, x_slice]
-            if doy_data is not None and doy_arr is not None:
-                doy_data[i] = doy_arr[y_slice, x_slice]
-
-        # Create DataArrays
         evi_da = xr.DataArray(
             evi_data,
             dims=['time', 'y', 'x'],
@@ -630,14 +641,25 @@ class ChunkedTimeSeriesReaderStreaming:
                 }
             )
 
+        ndfsi_da = xr.DataArray(
+            ndfsi_data,
+            dims=['time', 'y', 'x'],
+            coords={'time': self.dates,
+                    'y': self.y_coords[y_slice],
+                    'x': self.x_coords[x_slice]}
+        )
+
+
         elapsed = time.time() - t_start
         print(f"  Chunk {chunk_idx}: {n_dates} dates, {chunk_ny}x{chunk_nx} in {elapsed:.1f}s "
               f"({elapsed / n_dates:.3f}s/date)")
 
         if doy_da is not None:
-            return evi_da, doy_da, self.composite_start_doys
-        return evi_da
+            return evi_da, doy_da, self.composite_start_doys, ndfsi_da
+            
+        return evi_da, ndfsi_da
 
+        
     def _pad_edge_year(
             self,
             evi_context: xr.DataArray,
@@ -694,6 +716,7 @@ class ChunkedTimeSeriesReaderStreaming:
 
         return evi_padded, doy_padded, comp_start_padded
 
+    
     def process_all_chunks_yearly(
             self,
             process_fn,
@@ -738,12 +761,9 @@ class ChunkedTimeSeriesReaderStreaming:
                     print(f"\n  Chunk {chunk_idx}/{self.n_chunks}")
                     result = self.load_chunk(chunk_idx)
 
-                    if isinstance(result, tuple):
-                        evi_da_full, doy_da_full, comp_start_full = result
-                    else:
-                        evi_da_full = result
-                        doy_da_full = None
-                        comp_start_full = None
+                    evi_da_full, ndfsi_da_full = result 
+                    doy_da_full      = None
+                    comp_start_full  = None 
 
                     y_slice, x_slice = self.chunk_slices[chunk_idx]
                     data_years = sorted(set(evi_da_full.time.dt.year.values))
@@ -755,6 +775,7 @@ class ChunkedTimeSeriesReaderStreaming:
                     end_context_year = pd.Timestamp(f"{self.end_year}-12-31")
      
                     evi_context = evi_da_full.sel(time=slice(start_context_year, end_context_year))
+                    ndfsi_context = ndfsi_da_full.sel(time=slice(start_context_year, end_context_year))
                     doy_context = (doy_da_full.sel(time=slice(start_context_year, end_context_year))
                                    if doy_da_full is not None else None)
 
@@ -786,9 +807,8 @@ class ChunkedTimeSeriesReaderStreaming:
                     if doy_context is not None:
                         chunk_results = process_fn(
                             evi_context,
-                            doy_data=doy_context,
-                            composite_start_doys=comp_start_context,
                             target_year=self.target_year,
+                            ndfsi=ndfsi_context if self.use_ndfsi else None,
                             _pool=pool,
                             **process_kwargs
                         )

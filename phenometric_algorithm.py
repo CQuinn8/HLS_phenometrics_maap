@@ -9,9 +9,13 @@ warnings.filterwarnings('ignore', message='invalid value encountered in cast')
 
 from phenometrics_utils import *
 from scipy.interpolate import LSQUnivariateSpline
+from scipy.signal import find_peaks
+from phenometric_gap_fill import *
 import bottleneck
 
 
+##############################################
+##### Spline fitting funcitons and helpers ###
 def _make_worker_slices(ny: int, n_workers: int) -> list[tuple[int, int]]:
     """ Takes n_rows of data and n_workers and calculates slice coords for each worker """
     base, extra = divmod(ny, n_workers)
@@ -36,7 +40,6 @@ def _process_worker_slice(
     min_valid_points:   int,
     value_min:          float,
     value_max:          float,
-    fill_low_data:      str,
     k:                  int,
     n_output:           int,
     use_context_months: bool,
@@ -60,11 +63,9 @@ def _process_worker_slice(
             valid   = np.isfinite(ts) 
             n_valid = valid.sum()
 
-            # 2. Low-data handling (ToDo: add in fill logic) 
+            # 2. Low-data handling
             if n_valid < min_valid_points:
-                if fill_low_data == "mean" and n_valid > 0:
-                    result[:, local_yi, xi] = np.nanmean(ts[valid])
-                continue   # leave as NaN for default
+                continue
 
             x_valid = t_pixel[valid]
             y_valid = ts[valid].astype(np.float64)
@@ -76,7 +77,7 @@ def _process_worker_slice(
                 x_valid = x_valid[idx]
                 y_valid = y_valid[idx]
                 w_valid = w_valid[idx]
-                # Remove duplicate x positions (LSQ requires strictly increasing)
+                # Remove duplicate obs dates (LSQ requires strictly increasing)
                 keep    = np.concatenate([[True], np.diff(x_valid) > 1e-6])
                 x_valid = x_valid[keep]
                 y_valid = y_valid[keep]
@@ -93,7 +94,7 @@ def _process_worker_slice(
                 w_valid[y_valid < lo] *= 2.0
                 w_valid[y_valid > hi] *= 2.0
 
-            # 5. Knots: trim the precomputed set to this pixel's range
+            # 5. Knots: trim the precomputed time series to this pixel's range
             x_range  = x_valid[-1] - x_valid[0]            
             if use_context_months:
                 n_knots  = min(max(len(x_valid) // 3, 12), len(x_valid) - k - 1)
@@ -110,79 +111,151 @@ def _process_worker_slice(
                     continue
 
             # 6. Fit spline to full context observation dates and then evaluate on daily ts
-            try:
-                if not use_context_months:
-                    peak_idx    = np.argmax(y_valid)
-                    peak_t      = x_valid[peak_idx]
-                    pre_peak_t  = x_valid[0] + (peak_t - x_valid[0]) * 0.5
-                    post_peak_t = peak_t     + (x_valid[-1] - peak_t) * 0.5
-                    interior    = np.array([pre_peak_t, peak_t, post_peak_t])
-                    interior    = interior[
-                        (interior > x_valid[0] + 1) & (interior < x_valid[-1] - 1)
-                    ]
-                    if len(interior) < 2:
-                        continue
-                    spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=3)
-                else:
-                    spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=k)
-            
-                result[:, local_yi, xi] = np.clip(
-                    spl(t_daily), value_min, value_max
-                ).astype(np.float32)
-            
-            except Exception:
-                if fill_low_data == "mean":
-                    result[:, local_yi, xi] = float(np.nanmean(y_valid))
+            if not use_context_months:
+                peak_idx    = np.argmax(y_valid)
+                peak_t      = x_valid[peak_idx]
+                pre_peak_t  = x_valid[0] + (peak_t - x_valid[0]) * 0.5
+                post_peak_t = peak_t     + (x_valid[-1] - peak_t) * 0.5
+                interior    = np.array([pre_peak_t, peak_t, post_peak_t])
+                interior    = interior[
+                    (interior > x_valid[0] + 1) & (interior < x_valid[-1] - 1)
+                ]
+                if len(interior) < 2:
+                    continue
+                spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=3)
+            else:
+                spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=k)
+
+            result[:, local_yi, xi] = np.clip(
+                spl(t_daily), value_min, value_max
+            ).astype(np.float32)
 
     return row_start, row_end, result
+
+
+def _process_worker_slice_savgol(
+    evi_mmap_path:    str,
+    evi_shape:        tuple,
+    row_start:        int,
+    row_end:          int,
+    t_nominal:        np.ndarray,
+    t_daily:          np.ndarray,
+    min_valid_points: int,
+    value_min:        float,
+    value_max:        float,
+    fill_low_data:    str,
+    n_output:         int,
+    window_length:    int,
+    polyorder:        int,
+) -> tuple[int, int, np.ndarray]:
+    """
+   !!! Currently not default implementation in Pheno_Algo (Sept 2026) !!!
+
+    Savitzky-Golay smoothing worker.
+    Linearly interpolates sparse obs to daily then applies SG filter.
+    """
+    from scipy.signal import savgol_filter
+
+    evi_data = np.memmap(evi_mmap_path, dtype=np.float32, mode="r", shape=evi_shape)
+    n_rows   = row_end - row_start
+    nx       = evi_shape[2]
+    result   = np.full((n_output, n_rows, nx), np.nan, dtype=np.float32)
+
+    for local_yi, yi in enumerate(range(row_start, row_end)):
+        for xi in range(nx):
+            ts    = evi_data[:, yi, xi]
+            valid = np.isfinite(ts)
+
+            if valid.sum() < min_valid_points:
+                if fill_low_data == "mean" and valid.sum() > 0:
+                    result[:, local_yi, xi] = np.nanmean(ts[valid])
+                continue
+
+            x_valid = t_nominal[valid]
+            y_valid = ts[valid].astype(np.float64)
+
+            # 1. Linear interpolation to daily grid
+            daily_interp = np.interp(t_daily, x_valid, y_valid)
+
+            # 2. SG filter — ensure window_length doesn't exceed series length
+            wl = min(window_length, len(daily_interp))
+            wl = wl if wl % 2 == 1 else wl - 1   # must be odd
+            if wl <= polyorder:
+                result[:, local_yi, xi] = daily_interp.astype(np.float32)
+                continue
+
+            smoothed = savgol_filter(daily_interp, window_length=wl, polyorder=polyorder)
+            result[:, local_yi, xi] = np.clip(
+                smoothed, value_min, value_max
+            ).astype(np.float32)
+
+    return row_start, row_end, result
+
 
 def smooth_evi_chunk_for_year(
     chunk:                xr.DataArray,
     target_year:          int,
-    # --- algorithm config ---
+    smoother:             str = "spline",
+    savgol_window:        int = 31,
+    savgol_polyorder:     int = 3,
     min_valid_points:     int   = 6,
     min_valid_frac:       float = 0.30,
-    fill_low_data:        str   = "nan",  # currently no gap filling, Bolton uses the context years to "grab" similar values but that's a weaker method 
     value_min:            float = -1.0,
     value_max:            float = 1.0,
-    daily_output:         bool  = True,
-    k:                    int   = 5,      # spline degree, 4 = cubic
-    use_context_months:   bool  = True,   # computed to avoid pits/peaks from overfitting gaps
+    k:                    int   = 5,
+    use_context_months:   bool  = True,
     testing_mode:         bool  = False,
-    _pool:                Parallel | None = None,  # warm pool from caller
+    _pool:                Parallel | None = None,
     n_jobs=-1,
 ) -> xr.DataArray:
     """
-    Fit a pixel-wise LSQ smoothing spline over a ±context_months window
-    around target_year, returning daily smoothed EVI for target_year only.
+    Smooth a spatial EVI chunk for a target year using pixel-wise spline or Savitzky-Golay fitting.
+
+    Fits a smoother over a +/- 12-month context window (36 month total) around `target_year` to reduce
+    edge artifacts (if use_context_months), then returns a continuous daily EVI time series for the target
+    year only (365 days). Pixels with insufficient valid observations are returned as NaN.
 
     Parameters
     ----------
-    chunk                : (time, y, x) EVI DataArray covering at least
-                           target_year ± context_months of data.
-    target_year          : Year to produce output for.
-    min_valid_points     : Pixels with fewer finite observations are skipped.
-    fill_low_data        : "nan" — leave skipped pixels as NaN.
-                           "mean" — fill with the pixel's temporal mean.
-    value_min/max        : Output clipping bounds.
-    k                    : Spline degree (5 recommended for EVI phenology).
-    doy_data             : Optional (time, y, x) actual-DOY DataArray for
-                           10-day composites. When provided with
-                           composite_start_doys, each pixel gets its own
-                           time axis derived from actual observation DOYs.
-    composite_start_doys : 1-D array of composite-period start DOYs aligned
-                           to chunk.time. Required when doy_data is provided.
-    testing_mode         : If True, output spans the full fitting window
-                           instead of target_year only (used for QC plots).
-    _pool                : Pre-warmed joblib.Parallel instance. Pass this in
-                           from process_all_chunks_yearly so the loky pool
-                           startup cost is paid once per run, not per chunk.
+    chunk : xr.DataArray
+        (time, y, x) EVI DataArray spanning at least `target_year` +/- context months.
+    target_year : int
+        Calendar year for which to produce output.
+    smoother : {'spline', 'savgol'}
+        Smoothing method. 'spline' fits a weighted LSQ spline; 'savgol' applies a Savitzky-Golay filter.
+    savgol_window : int
+        Window length (days, must be odd) for the Savitzky-Golay filter.
+    savgol_polyorder : int
+        Polynomial order for the Savitzky-Golay filter.
+    min_valid_points : int
+        Threshold for valid observations required per pixel; the effective floor is also constrained
+        by `k+1` knots and `min_valid_frac`.
+    min_valid_frac : float
+        Minimum fraction of timesteps that must be finite for a pixel to be fit.
+    value_min, value_max : float
+        Clipping bounds applied to the smoothed output (EVI range).
+    k : int
+        Spline degree (3 = cubic, 5 = quintic).
+    use_context_months : bool
+        If True, fits over a 36 month window to anchor edge behaviour.
+        If False, fits only over the target year (data-sparse regions).
+    testing_mode : bool
+        If True, output spans the full fitting window rather than target_year only,
+        useful for visual QC of edge and context behaviour.
+    _pool : joblib.Parallel or None
+        Pre-warmed Parallel instance. Reusing a pool avoids repeated loky worker
+        startup costs when processing many chunks in sequence.
+    n_jobs : int
+        Number of parallel workers. Ignored if `_pool` is provided.
 
     Returns
     -------
-    xr.DataArray : (time, y, x) daily smoothed EVI.
-                   time = 365 days of target_year (or full context window if testing_mode).
+    xr.DataArray
+        (time, y, x) daily smoothed EVI with dtype float32.
+        ``time`` covers every day of `target_year` (365 values), or the full
+        context window if ``testing_mode=True``.
     """
+
     t_start   = time.time()
     if _pool is not None and hasattr(_pool, 'n_jobs'):
         pool_workers = _pool.n_jobs
@@ -283,11 +356,7 @@ def smooth_evi_chunk_for_year(
         return xr.DataArray(
             nan_data,
             dims=["time", "y", "x"],
-            coords={
-                "time": daily_times,
-                "y":    fit_chunk.y,
-                "x":    fit_chunk.x,
-            },
+            coords={"time": daily_times,"y": fit_chunk.y,"x": fit_chunk.x,},
         )
         
     # ----------------------------------------------------------------
@@ -349,20 +418,38 @@ def smooth_evi_chunk_for_year(
         t_dispatch = time.time()
 
         # Shared kwargs — same for every worker
-        worker_kwargs = dict(
-            evi_mmap_path    = evi_path,
-            evi_shape        = evi_shape,
-            t_nominal        = t_nominal,
-            weights_template = weights_template,
-            t_daily          = t_daily,
-            min_valid_points = effective_min_valid,
-            value_min        = value_min,
-            value_max        = value_max,
-            fill_low_data    = fill_low_data,
-            k                = k,
-            n_output         = n_output,
-            use_context_months=use_context_months,
-        )
+        if smoother == "savgol":
+            worker_kwargs = dict(
+                evi_mmap_path=evi_path,
+                evi_shape=evi_shape,
+                t_nominal=t_nominal,
+                t_daily=t_daily,
+                min_valid_points=effective_min_valid,
+                value_min=value_min,
+                value_max=value_max,
+                n_output=n_output,
+                window_length=savgol_window,
+                polyorder=savgol_polyorder,
+            )
+            worker_fn = _process_worker_slice_savgol
+        else:
+            worker_kwargs = dict(
+                evi_mmap_path=evi_path,
+                evi_shape=evi_shape,
+                t_nominal=t_nominal,
+                weights_template=weights_template,
+                t_daily=t_daily,
+                min_valid_points=effective_min_valid,
+                value_min=value_min,
+                value_max=value_max,
+                k=k,
+                n_output=n_output,
+                use_context_months=use_context_months,
+            )
+            worker_fn = _process_worker_slice
+        print(f"  Smoother  : {smoother}"
+              + (f" (window={savgol_window}, polyorder={savgol_polyorder})"
+                 if smoother == "savgol" else f" (k={k})"))
 
         executor = _pool or Parallel(
             n_jobs=n_workers, prefer="processes", batch_size="auto"
@@ -370,9 +457,7 @@ def smooth_evi_chunk_for_year(
 
         # use precomputed row-wise worker slices to distribute with kwargs to workers
         results = executor(
-            delayed(_process_worker_slice)(
-                row_start=s, row_end=e, **worker_kwargs
-            )
+            delayed(_process_worker_slice)(row_start=s, row_end=e, **worker_kwargs)
             for s, e in worker_slices
         )
 
@@ -411,6 +496,8 @@ def smooth_evi_chunk_for_year(
     )
 
 
+#############################################
+##### Thresholding Function #################
 def apply_thresholds_chunk(chunk: xr.DataArray,
                            min_val: float = 0.1,
                            max_val: float = 0.95) -> xr.DataArray:
@@ -418,6 +505,8 @@ def apply_thresholds_chunk(chunk: xr.DataArray,
     return chunk.where((chunk >= min_val) & (chunk <= max_val))
 
 
+#############################################
+##### Despiking function ####################
 # per Bolton et al., 2020 eq.3 pg4
 def despike_timeseries_chunk(
         chunk: xr.DataArray,
@@ -429,14 +518,14 @@ def despike_timeseries_chunk(
     """
     Three-point de-spiking with optional per-pixel DOY awareness.
 
-    Args:
+    Parameters:
+    ----------
         chunk:                DataArray (time, y, x) of EVI values
-        doy_data:             DataArray (time, y, x) of DOY offsets within composite
-        composite_start_doys: Array of composite start DOY per timestep
         max_gap_days:         Max gap between pre/post for despiking
         abs_threshold:        Absolute difference threshold
         rel_threshold:        Relative difference threshold
         handle_edges:         Check first/last observations for spikes
+
     """
     n_times = len(chunk.time)
     chunk_values = chunk.values  # (time, y, x)
@@ -463,13 +552,33 @@ def despike_timeseries_chunk(
     abs_diff = np.abs(diff)
     rel_diff = np.abs(diff / amplitude.where(np.abs(amplitude) > 0.001))
 
+
     spike_da = (
-            (abs_diff > abs_threshold)
-            & (rel_diff > rel_threshold)
-            & (gap < max_gap_days)
-            & (~evi_pre.isnull())
-            & (~evi_post.isnull())
+        # Case 1: large brightness spike
+        (abs_diff > abs_threshold)
+        & (rel_diff > rel_threshold)
+        & (gap < max_gap_days)
+        & (~evi_pre.isnull())
+        & (~evi_post.isnull())
+    ) | (
+        # Case 2: large absolute dip regardless of relative, catches cases where
+        # neighbour amplitude is large enough to suppress rel below threshold
+        (abs_diff > abs_threshold * 1.5)
+        & (chunk < evi_pre - abs_threshold)   # must be below pre neighbour
+        & (chunk < evi_post - abs_threshold)  # must be below post neighbour
+        & (gap < max_gap_days)
+        & (~evi_pre.isnull())
+        & (~evi_post.isnull())
+    ) | (
+        # Case 3: near-flat neighbours — rel is noisy when amplitude ~ 0
+        (np.abs(amplitude) <= 0.05)
+        & (evi_pre - chunk > abs_threshold * 0.6)
+        & (evi_post - chunk > abs_threshold * 0.6)
+        & (gap < max_gap_days)
+        & (~evi_pre.isnull())
+        & (~evi_post.isnull())
     )
+
     spike_mask = spike_da.values
 
     if handle_edges and n_times >= 3:
@@ -516,6 +625,8 @@ def despike_timeseries_chunk(
     return chunk_despiked
 
 
+######################################################
+##### Product: Target year quality pixels function ###
 def compute_scene_quality_metrics(
     chunk: xr.DataArray,
     target_year: int,
@@ -554,7 +665,9 @@ def compute_scene_quality_metrics(
 
     return mean_revisit, quality_pixels
 
-    
+
+#############################################
+##### Main phenology metrics function #######
 def annual_phenometrics_chunk(chunk: xr.DataArray,
                               year: int = None,
                               threshold_greenup_pct: float = 0.15) -> dict[str, np.ndarray]:
@@ -574,301 +687,363 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
     """
 
     ny, nx = chunk.shape[1], chunk.shape[2]
-    n_years = 1  # n years
+    n_cycles = 2  # Primary and Secondary growing seasons
 
-    # Initialize output phenometric arrays
-    annual_mean = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    annual_max = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    annual_max_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    annual_min = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    annual_min_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
+    # Initialize output phenometric arrays (shape: n_cycles, ny, nx)
+    core_metric_keys = [
+        'annual_mean', 'annual_max', 'annual_max_doy', 'annual_min', 'annual_min_doy',
+        'greenup_evi', 'greenup_doy', 'greenup_threshold', 'dormancy_evi', 'dormancy_doy',
+        'annual_amplitude', 'growing_season_length', 'auc_full', 'auc_net',
+        # 'greenup_rate', 'greenup_rate_doy', 'senescence_rate', 'senescence_rate_doy'
+        'mid_greenup_doy', 'mid_greendown_doy'
+    ]
+    metric_keys = core_metric_keys + ['qa_valid_metrics']
+    metrics = {k: np.full((n_cycles, ny, nx), np.nan, dtype=np.float32) for k in metric_keys}
+    cycle_count = np.full((ny, nx), np.nan, dtype=np.float32)
 
-    greenup_evi = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    greenup_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    greenup_threshold = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
+    if len(chunk.time) == 0: return metrics
 
-    dormancy_evi = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    dormancy_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-
-    annual_amplitude = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    growing_season_length = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-
-    auc_full = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    auc_net = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-
-    greenup_rate = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    greenup_rate_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-
-    senescence_rate = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    senescence_rate_doy = np.full((n_years, ny, nx), np.nan, dtype=np.float32)
-    
-    year_evi = chunk
-    if len(year_evi.time) == 0:
-        return None
-
-    nominal_doys = year_evi.time.dt.dayofyear.values
-
-    # 1. MEAN
-    annual_mean[0] = year_evi.mean(dim='time').values
-
-    # 2. MAX
-    year_max = year_evi.max(dim='time').values
-    annual_max[0] = year_max
-
-    # 3. MIN
-    year_min = year_evi.min(dim='time').values
-    annual_min[0] = year_min
-
-    # 4. AMPLITUDE
-    amplitude = year_max - year_min
-    annual_amplitude[0] = amplitude
-
-    # 5. Max DOY
-    fill_value = -9999
-    year_filled = year_evi.fillna(fill_value)
-    max_indices = year_filled.argmax(dim='time').values  # (y, x)
-
-    # 6. Min DOY
-    min_fill_value = 9999
-    year_min_filled = year_evi.fillna(min_fill_value)
-    min_indices = year_min_filled.argmin(dim='time').values
-
-    # prep annual values and mask
-    year_evi_values = year_evi.values  # (time, y, x)
-    all_nan_mask = year_evi.isnull().all(dim='time').values  # (y, x)
+    # nominal_doys = chunk.time.dt.dayofyear.values
+    target_jan1 = np.datetime64(f'{year}-01-01')
+    nominal_doys = (chunk.time.values - target_jan1) / np.timedelta64(1, 'D') + 1
+    years_array = chunk.time.dt.year.values
+    chunk_vals = chunk.values
+    continuous_days = np.arange(len(nominal_doys))
 
     for yi in range(ny):
         for xi in range(nx):
-            if not all_nan_mask[yi, xi]:
-                max_idx = max_indices[yi, xi]
-                annual_max_doy[0, yi, xi] = nominal_doys[max_idx]
-                min_idx = min_indices[yi, xi]
-                annual_min_doy[0, yi, xi] = nominal_doys[min_idx]
-
-    # 7. GREENUP, 8. DORMANCY, 9. AUC full, 10. AUC net, 11. GREENUP Inflection, 12. Senescences Inflection
-    threshold = year_min + (amplitude * threshold_greenup_pct)
-    greenup_threshold[0] = threshold
-    for yi in range(ny):
-        for xi in range(nx):
-            if all_nan_mask[yi, xi]:
+            pixel_evi = chunk_vals[:, yi, xi]
+            if np.isnan(pixel_evi).all():
                 continue
 
-            pixel_evi = year_evi_values[:, yi, xi]
-            pixel_max_doy = annual_max_doy[0, yi, xi]
-            pixel_threshold = threshold[yi, xi]
+            global_amp = np.nanmax(pixel_evi) - np.nanmin(pixel_evi)
 
-            if np.isnan(pixel_max_doy) or np.isnan(pixel_threshold):
-                continue
+            # 1. Identify candidate peaks (1st derivative == 0, pos to neg slope)
+            peaks, _ = find_peaks(pixel_evi)
 
-            pixel_doys = nominal_doys.astype(float)
+            # Follow MODIS MCD12Q2 peak finding logic (Gray et al., 2022)
+            valid_cycles = []
+            if len(peaks) > 0:
+                active_peaks = sorted(list(peaks))
 
-            valid_pixel = ~np.isnan(pixel_evi) & ~np.isnan(pixel_doys)
+                # Iteratively eliminate non-candidate peaks to dynamically expand neighboring search windows
+                while len(active_peaks) > 0:
+                    current_cycles = []
 
-            if valid_pixel.sum() < 3:
-                continue
+                    for i, current_peak in enumerate(active_peaks):
+                        prior_peak = active_peaks[i - 1] if i > 0 else 0
+                        next_peak = active_peaks[i + 1] if i < len(active_peaks) - 1 else len(pixel_evi) - 1
 
-            pixel_evi_valid = pixel_evi[valid_pixel]
-            pixel_doys_valid = pixel_doys[valid_pixel]
+                        # Bound the searches to max 185-30 days prior/post current peak
+                        # Threshold 1: Greenup (greendown) >30 days prior (after) to current peak & after (before) prior peak
+                        gu_start = max(prior_peak, prior_peak - 185)
+                        gu_end = current_peak - 30
+                        gd_start = current_peak + 30
+                        gd_end = min(next_peak, current_peak + 185)
 
-            # Greenup: first DOY exceeding threshold BEFORE peak AND on ascending segment
-            pre_peak_mask = pixel_doys < pixel_max_doy
-            if pre_peak_mask.sum() > 0:
-                pre_peak_evi = pixel_evi[pre_peak_mask]
-                pre_peak_doys = pixel_doys[pre_peak_mask]
-                valid = ~np.isnan(pre_peak_evi)
-                
-                if valid.sum() > 2:
-                    pre_peak_evi  = pre_peak_evi[valid]
-                    pre_peak_doys = pre_peak_doys[valid]
+                        if gu_end <= gu_start or gd_start >= gd_end:
+                            current_cycles.append(
+                                {'peak_idx': current_peak, 'amp': -1.0, 'peak_evi': pixel_evi[current_peak]})
+                            continue
 
-                    # Compute derivative on pre-peak valid obs
-                    pre_deriv = np.gradient(pre_peak_evi, pre_peak_doys)
-                    above_thresh = pre_peak_evi >= pixel_threshold
-                    ascending    = pre_deriv > 0
-                    valid_greenup = above_thresh & ascending
+                        gu_segment = pixel_evi[gu_start:gu_end]
+                        gd_segment = pixel_evi[gd_start:gd_end]
 
-                    if valid_greenup.any():
-                        first_idx = np.argmax(valid_greenup)
-                        greenup_doy[0, yi, xi] = pre_peak_doys[first_idx]
-                        greenup_evi[0, yi, xi] = pre_peak_evi[first_idx]
+                        if np.isnan(gu_segment).all() or np.isnan(gd_segment).all():
+                            current_cycles.append(
+                                {'peak_idx': current_peak, 'amp': -1.0, 'peak_evi': pixel_evi[current_peak]})
+                            continue
 
-            # Dormancy: first DOY below threshold AFTER peak
-            post_peak_mask = pixel_doys > pixel_max_doy            
-            if post_peak_mask.sum() > 0:
-                evi_post = pixel_evi[post_peak_mask]
-                doy_post = pixel_doys[post_peak_mask]         
+                        gu_min_idx = gu_start + np.nanargmin(gu_segment)
+                        gd_min_idx = gd_start + np.nanargmin(gd_segment)
 
-                # reduce to non NAN range of dates
-                valid_post = ~np.isnan(evi_post)
-                evi_post   = evi_post[valid_post]
-                doy_post   = doy_post[valid_post]
-                if len(evi_post) == 0:
-                    # No valid post-peak obs: dormancy = NaN
-                    continue
-                
-                crossing_idx = np.where(evi_post <= pixel_threshold)[0]            
-                if len(crossing_idx) > 0:
-                    i = crossing_idx[0]            
-                    if i > 0:
-                        x0, x1 = doy_post[i-1], doy_post[i]
-                        y0, y1 = evi_post[i-1], evi_post[i]            
-                        dormancy_doy[0, yi, xi] = (doy_post[i-1] 
-                                                   if abs(y0 - pixel_threshold) < abs(y1 - pixel_threshold) 
-                                                   else doy_post[i])
-                        dormancy_evi[0, yi, xi] = pixel_threshold
+                        amp = pixel_evi[current_peak] - pixel_evi[gu_min_idx]
+
+                        current_cycles.append({
+                            'peak_idx': current_peak,
+                            'gu_min_idx': gu_min_idx,
+                            'gd_min_idx': gd_min_idx,
+                            'amp': amp,
+                            'peak_evi': pixel_evi[current_peak],
+                            'min_evi': pixel_evi[gu_min_idx]
+                        })
+
+                    # Find the smallest cycle (Smallest amplitude, Break ties using peak_evi for tight windows)
+                    smallest_cycle = min(current_cycles, key=lambda x: (x['amp'], x['peak_evi']))
+
+                    # Threshold 2: cycle amplitude >= 0.1 and >= 35% global amplitude
+                    if smallest_cycle['amp'] < 0.1 or smallest_cycle['amp'] < 0.35 * global_amp:
+                        # Failed: Remove it and repeat loop. Neighbor windows will now expand to include this segment as potential growing cycle.
+                        active_peaks.remove(smallest_cycle['peak_idx'])
                     else:
-                        dormancy_doy[0, yi, xi] = doy_post[i]
-                        dormancy_evi[0, yi, xi] = evi_post[i]
-            
-                else:
-                    # fallback: last valid observation after peak
-                    dormancy_doy[0, yi, xi] = doy_post[-1]
-                    dormancy_evi[0, yi, xi] = evi_post[-1]
-            
-            # 11. AUC FULL and 12. AUC NET
-            pix_greenup = greenup_doy[0, yi, xi]
-            pix_dormancy = dormancy_doy[0, yi, xi]
-            pix_min = year_min[yi, xi]
+                        # The SMALLEST active peak passed: ALL active peaks pass, progress to phenometrics
+                        valid_cycles = current_cycles
+                        break
 
-            if not np.isnan(pix_greenup) and not np.isnan(pix_dormancy):
-                gs_mask = (pixel_doys_valid >= pix_greenup) & (pixel_doys_valid <= pix_dormancy)
+            # 2. Filter cycles where the peak falls strictly within target year
+            target_cycles = [c for c in valid_cycles if years_array[c['peak_idx']] == year]
+            cycle_count[yi, xi] = len(target_cycles)
 
-                if gs_mask.sum() >= 3:
-                    gs_doy = pixel_doys_valid[gs_mask]
-                    gs_evi = pixel_evi_valid[gs_mask]
+            # Fallback: If peak logic failed, treat the target year as a single cycle
+            if len(target_cycles) == 0:
+                year_mask = (years_array == year) & ~np.isnan(pixel_evi)
+                if year_mask.any():
+                    # Find peak strictly within the target year
+                    target_valid_idx = np.where(year_mask)[0]
+                    p_idx = target_valid_idx[np.argmax(pixel_evi[target_valid_idx])]
 
+                    # But allow the MINIMUM search to cross into context years (up to 185 days)
+                    all_valid_idx = np.where(~np.isnan(pixel_evi))[0]
+
+                    pre_mask = all_valid_idx[(all_valid_idx <= p_idx) & (all_valid_idx >= p_idx - 185)]
+                    gu_min_idx = pre_mask[np.argmin(pixel_evi[pre_mask])] if len(pre_mask) > 0 else p_idx
+
+                    post_mask = all_valid_idx[(all_valid_idx >= p_idx) & (all_valid_idx <= p_idx + 185)]
+                    gd_min_idx = post_mask[np.argmin(pixel_evi[post_mask])] if len(post_mask) > 0 else p_idx
+
+                    target_cycles = [{
+                        'peak_idx': p_idx, 'gu_min_idx': gu_min_idx, 'gd_min_idx': gd_min_idx,
+                        'amp': pixel_evi[p_idx] - pixel_evi[gu_min_idx],
+                        'peak_evi': pixel_evi[p_idx], 'min_evi': pixel_evi[gu_min_idx]
+                    }]
+
+            target_cycles = sorted(target_cycles, key=lambda x: x['peak_evi'], reverse=True)[:n_cycles]
+
+            # 3. Calculate phenometrics accepted cycles
+            for c_idx, cycle in enumerate(target_cycles):
+                metrics['annual_max'][c_idx, yi, xi] = cycle['peak_evi']
+                metrics['annual_max_doy'][c_idx, yi, xi] = nominal_doys[cycle['peak_idx']]
+                metrics['annual_min'][c_idx, yi, xi] = cycle['min_evi']
+                metrics['annual_min_doy'][c_idx, yi, xi] = nominal_doys[cycle['gu_min_idx']]
+                metrics['annual_amplitude'][c_idx, yi, xi] = cycle['amp']
+
+                # Slice times for this specific cycle context
+                c_start, c_end = cycle['gu_min_idx'], cycle['gd_min_idx']
+                metrics['annual_mean'][c_idx, yi, xi] = np.nanmean(pixel_evi[c_start:c_end])
+
+                thresh_val = cycle['min_evi'] + (cycle['amp'] * threshold_greenup_pct)
+                mid_thresh_val = cycle['min_evi'] + (cycle['amp'] * 0.50)
+                # thresh_val_10pct = cycle['min_evi'] + (cycle['amp'] * 0.10)
+                # thresh_val_25pct = cycle['min_evi'] + (cycle['amp'] * 0.10)
+                metrics['greenup_threshold'][c_idx, yi, xi] = thresh_val
+
+                # 1. GREENUP - tracking backwards from peak
+                pre_mask = (continuous_days >= cycle['gu_min_idx']) & (continuous_days < cycle['peak_idx'])
+                pre_evi = pixel_evi[pre_mask]
+                pre_doys = nominal_doys[pre_mask]
+                gu_abs_idx = np.nan  # Continuous index tracker for rates/lengths
+
+                if len(pre_evi) > 2:
+                    # pre_deriv = np.gradient(pre_evi, continuous_days[pre_mask]) # rate var
+                    # Find the most immediate previous time before the peak that EVI dropped below threshold
+                    below_thresh = np.where(pre_evi <= thresh_val)[0]
+                    if len(below_thresh) > 0:
+                        i = below_thresh[-1]
+                        if i < len(pre_evi) - 1:
+                            # Interpolate DOY to closest exact threshold crossing
+                            y0, y1 = pre_evi[i], pre_evi[i + 1]
+                            closest_idx = i if abs(y0 - thresh_val) < abs(y1 - thresh_val) else i + 1
+                            metrics['greenup_doy'][c_idx, yi, xi] = pre_doys[closest_idx]
+                            gu_abs_idx = continuous_days[pre_mask][closest_idx]
+                        else:
+                            metrics['greenup_doy'][c_idx, yi, xi] = pre_doys[i]
+                            gu_abs_idx = continuous_days[pre_mask][i]
+                        metrics['greenup_evi'][c_idx, yi, xi] = thresh_val
+
+                    # # Steepest greenup
+                    # if not np.isnan(gu_abs_idx):
+                    #     min_rise = cycle['min_evi'] + (cycle['amp'] * 0.10)
+                    #     inflect_mask = (pre_evi >= min_rise) & (continuous_days[pre_mask] >= gu_abs_idx)
+                    #     if inflect_mask.sum() >= 2:
+                    #         inf_idx = np.argmax(pre_deriv[inflect_mask])
+                    #         metrics['greenup_rate'][c_idx, yi, xi] = pre_deriv[inflect_mask][inf_idx]
+                    #         metrics['greenup_rate_doy'][c_idx, yi, xi] = pre_doys[inflect_mask][inf_idx]
+
+                    # Median Greenup Threshold (50% amplitude)
+                    below_mid = np.where(pre_evi <= mid_thresh_val)[0]
+                    if len(below_mid) > 0:
+                        i = below_mid[-1]
+                        if i < len(pre_evi) - 1:
+                            y0, y1 = pre_evi[i], pre_evi[i + 1]
+                            closest_idx = i if abs(y0 - mid_thresh_val) < abs(y1 - mid_thresh_val) else i + 1
+                            metrics['mid_greenup_doy'][c_idx, yi, xi] = pre_doys[closest_idx]
+                        else:
+                            metrics['mid_greenup_doy'][c_idx, yi, xi] = pre_doys[i]
+
+                # 2. DORMANCY
+                post_mask = (continuous_days > cycle['peak_idx']) & (continuous_days <= cycle['gd_min_idx'])
+                post_evi = pixel_evi[post_mask]
+                post_doys = nominal_doys[post_mask]
+                dorm_abs_idx = np.nan
+
+                if len(post_evi) > 2:
+                    # post_deriv = np.gradient(post_evi, continuous_days[post_mask]) # used in rate
+                    # Find the FIRST time after the peak that EVI drops below greenup threshold
+                    below_thresh = np.where(post_evi <= thresh_val)[0]
+                    if len(below_thresh) > 0:
+                        i = below_thresh[0]
+                        if i > 0:
+                            # Interpolate DOY to closest exact threshold crossing
+                            y0, y1 = post_evi[i - 1], post_evi[i]
+                            closest_idx = i - 1 if abs(y0 - thresh_val) < abs(y1 - thresh_val) else i
+                            metrics['dormancy_doy'][c_idx, yi, xi] = post_doys[closest_idx]
+                            dorm_abs_idx = continuous_days[post_mask][closest_idx]
+                        else:
+                            metrics['dormancy_doy'][c_idx, yi, xi] = post_doys[i]
+                            dorm_abs_idx = continuous_days[post_mask][i]
+                        metrics['dormancy_evi'][c_idx, yi, xi] = thresh_val
+
+                    # # Steepest senescence
+                    # if not np.isnan(dorm_abs_idx):
+                    #     max_fall = cycle['peak_evi'] - (cycle['amp'] * 0.10)
+                    #     inflect_mask = (post_evi <= max_fall) & (continuous_days[post_mask] <= dorm_abs_idx)
+                    #     if inflect_mask.sum() >= 2:
+                    #         inf_idx = np.argmin(post_deriv[inflect_mask])
+                    #         metrics['senescence_rate'][c_idx, yi, xi] = post_deriv[inflect_mask][inf_idx]
+                    #         metrics['senescence_rate_doy'][c_idx, yi, xi] = post_doys[inflect_mask][inf_idx]
+                    # 50% Greendown Threshold
+                    below_mid = np.where(post_evi <= mid_thresh_val)[0]
+                    if len(below_mid) > 0:
+                        i = below_mid[0]
+                        if i > 0:
+                            y0, y1 = post_evi[i - 1], post_evi[i]
+                            closest_idx = i - 1 if abs(y0 - mid_thresh_val) < abs(y1 - mid_thresh_val) else i
+                            metrics['mid_greendown_doy'][c_idx, yi, xi] = post_doys[closest_idx]
+                        else:
+                            metrics['mid_greendown_doy'][c_idx, yi, xi] = post_doys[i]
+
+                # 3. AUC and 4. Growing Season Length calculations (Requires both ends)
+                if not np.isnan(gu_abs_idx) and not np.isnan(dorm_abs_idx):
+                    metrics['growing_season_length'][c_idx, yi, xi] = dorm_abs_idx - gu_abs_idx
+                    gs_mask = (continuous_days >= gu_abs_idx) & (continuous_days <= dorm_abs_idx)
+                    gs_evi = pixel_evi[gs_mask]
                     gs_valid = ~np.isnan(gs_evi)
+
                     if gs_valid.sum() >= 3:
-                        gs_doy = gs_doy[gs_valid]
                         gs_evi = gs_evi[gs_valid]
+                        # Using dx=1 since indices are continuous days to prevent DOY wrap-around bugs
+                        metrics['auc_full'][c_idx, yi, xi] = trapezoid(gs_evi, dx=1)
+                        metrics['auc_net'][c_idx, yi, xi] = trapezoid(gs_evi - cycle['min_evi'], dx=1)
 
-                        # AUC Full: total area under curve from greenup to dormancy
-                        auc_full[0, yi, xi] = trapezoid(gs_evi, gs_doy)
+        # Count the number of valid phenometrics created: a quality proxy
+    metrics['qa_valid_metrics'] = np.zeros((n_cycles, ny, nx), dtype=np.float32)
+    for k in core_metric_keys:
+        metrics['qa_valid_metrics'] += ~np.isnan(metrics[k])
 
-                        # AUC Net: area above the minimum baseline
-                        gs_evi_above_min = gs_evi - pix_min
-                        auc_net[0, yi, xi] = trapezoid(gs_evi_above_min, gs_doy)
+    # count the number of detected cycles
+    metrics['cycle_count'] = cycle_count
 
-            # 13 & 14. INFLECTION POINTS (steepest greenup and senescence)
-            if len(pixel_doys_valid) >= 4:
-                evi_derivative = np.gradient(pixel_evi_valid, pixel_doys_valid)
-                min_rise_scalar = 0.10
-                # Steepest greenup: max positive derivative before peak
-                pre_peak = pixel_doys_valid < pixel_max_doy
-                if pre_peak.sum() >= 2:
-                    pre_derivs = evi_derivative[pre_peak]
-                    pre_doys   = pixel_doys_valid[pre_peak]
-                    pre_evi    = pixel_evi_valid[pre_peak]
-                
-                    # ── Exclude peak shoulder ─────────────────────────────────
-                    # Greenup inflection must be after EVI has risen meaningfully
-                    # from baseline — at least 20% of amplitude above min
-                    pixel_min_evi  = annual_min[0, yi, xi]
-                    amplitude_px   = annual_amplitude[0, yi, xi]
-                    min_rise       = pixel_min_evi + (amplitude_px * min_rise_scalar)
-                
-                    on_ascending_limb = pre_evi >= min_rise
-                    if on_ascending_limb.sum() >= 2:
-                        pre_derivs = pre_derivs[on_ascending_limb]
-                        pre_doys   = pre_doys[on_ascending_limb]
-                
-                        max_rate_idx = np.argmax(pre_derivs)
-                        greenup_rate[0, yi, xi]     = pre_derivs[max_rate_idx]
-                        greenup_rate_doy[0, yi, xi] = pre_doys[max_rate_idx]
+    return metrics
 
-                # Steepest senescence: max negative derivative after peak
-                post_peak = pixel_doys_valid > pixel_max_doy
-                if post_peak.sum() >= 2:
-                    post_derivs = evi_derivative[post_peak]
-                    post_doys = pixel_doys_valid[post_peak]
-                    post_evi    = pixel_evi_valid[post_peak]
-                    
-                    pixel_peak_evi = annual_max[0, yi, xi]
-                    amplitude_px   = annual_amplitude[0, yi, xi]
-                    min_drop       = pixel_peak_evi - (amplitude_px * min_rise_scalar)
 
-                    on_descending_limb = post_evi <= min_drop
-                    if on_descending_limb.sum() >= 2:
-                        post_derivs = post_derivs[on_descending_limb]
-                        post_doys   = post_doys[on_descending_limb]
-                
-                        min_rate_idx = np.argmin(post_derivs)
-                        senescence_rate[0, yi, xi]     = post_derivs[min_rate_idx]
-                        senescence_rate_doy[0, yi, xi] = post_doys[min_rate_idx]
-                
-    # 15. Growing season length
-    valid_both = ~np.isnan(greenup_doy[0]) & ~np.isnan(dormancy_doy[0])
-    growing_season_length[0, valid_both] = dormancy_doy[0, valid_both] - greenup_doy[0, valid_both]
-
-    return {
-        'annual_mean': annual_mean,
-        'annual_max': annual_max,
-        'annual_min': annual_min,
-        'annual_max_doy': annual_max_doy,
-        'annual_amplitude': annual_amplitude,
-        'greenup_doy': greenup_doy,
-        'dormancy_doy': dormancy_doy,
-        'growing_season_length': growing_season_length,
-
-        'annual_min_doy': annual_min_doy,
-        'greenup_evi': greenup_evi,
-        'dormancy_evi': dormancy_evi,
-        'greenup_threshold': greenup_threshold,
-
-        'auc_full': auc_full,
-        'auc_net': auc_net,
-        'greenup_rate': greenup_rate,
-        'greenup_rate_doy': greenup_rate_doy,
-        'senescence_rate': senescence_rate,
-        'senescence_rate_doy': senescence_rate_doy,
-    }
-
+###############################################################################
+##### Fucntions to help gap filling and non growing season ID #################
 
 def get_context_months_from_gaps(
-    chunk: xr.DataArray,
-    target_year: int,
-    gap_threshold_days: int = 45,
+        chunk: xr.DataArray,
+        target_year: int,
+        gap_threshold_days: int = 70,  # 10week isoline in Bormann et al., 2018
+        min_spatial_coverage: float = 0.25,  # Require N% of pixels to have data
 ) -> bool:
     """
-    Check the actual observation record.
-    If the first observation gap at start or end of target year
-    exceeds gap_threshold_days, context years will cause edge spikes.
-    Return 0 context months in that case.
+    Check the actual observation record for temporal gaps at the pixel level.
+    If the median pixel has a gap at the start or end of the target year
+    exceeding gap_threshold_days (a conservative winter estimate),
+    context years will cause edge spikes so set use_context_months=False.
     """
     target_obs = chunk.sel(time=str(target_year))
-    has_obs = target_obs.notnull().any(dim=["y", "x"])
-    if not has_obs.any():
-        return False   # all-NaN chunk — handled elsewhere
+    is_valid = target_obs.notnull()
+    has_any = is_valid.any(dim="time")
 
-    obs_times = target_obs.time.values
-    valid_times = obs_times[has_obs.values]
-
-    # Gap from Jan 1 to first observation
-    jan1 = np.datetime64(f"{target_year}-01-01")
-    dec31 = np.datetime64(f"{target_year}-12-31")
-    gap_start = int((valid_times[0]  - jan1)  / np.timedelta64(1, 'D'))
-    gap_end   = int((dec31 - valid_times[-1]) / np.timedelta64(1, 'D'))
-
-    if gap_start >= gap_threshold_days or gap_end >= gap_threshold_days:
+    if not has_any.any():
+        print(f"  [Context Diagnostics] {target_year}: Chunk is completely empty.")
         return False
 
+    # Find the index of the first and last valid observation for every pixel
+    first_idx = is_valid.argmax(dim="time")
+    n_times = is_valid.sizes["time"]
+    last_idx = n_times - 1 - is_valid.isel(time=slice(None, None, -1)).argmax(dim="time")
+
+    # Get DOY and mask NaN
+    first_doys = target_obs.time.dt.dayofyear.isel(time=first_idx).where(has_any)
+    last_doys = target_obs.time.dt.dayofyear.isel(time=last_idx).where(has_any)
+
+    # Calculate the median gaps
+    median_first_doy = float(first_doys.median().values)
+    median_last_doy = float(last_doys.median().values)
+    gap_start = int(median_first_doy - 1)  # DOY 1 = 0 gap
+    gap_end = int(365 - median_last_doy)
+
+    # --- DIAGNOSTICS ---
+    # What % of pixels got an observation in the first/last 45 days
+    early_pixels = (first_doys <= gap_threshold_days).sum().values
+    late_pixels = (last_doys >= (365 - gap_threshold_days)).sum().values
+    total_valid = has_any.sum().values
+
+    pct_early = (early_pixels / total_valid) * 100 if total_valid > 0 else 0
+    pct_late = (late_pixels / total_valid) * 100 if total_valid > 0 else 0
+
+    print(f"  [Context months diagnostics] {target_year} Median Gaps:")
+    print(f"    -> Start Gap: {gap_start} days (Median first obs: DOY {median_first_doy:.0f})")
+    print(f"    -> End Gap:   {gap_end} days (Median last obs: DOY {median_last_doy:.0f})")
+    print(f"    -> Pixels with data in first {gap_threshold_days} days: {pct_early:.1f}%")
+    print(f"    -> Pixels with data in last {gap_threshold_days} days:  {pct_late:.1f}%")
+
+    if gap_start >= gap_threshold_days or gap_end >= gap_threshold_days:
+        print("    => RESULT: False (Winter gap detected, turning OFF context months)")
+        return False
+
+    print("    => RESULT: True (Sufficient winter data, using 3-year context)")
     return True
 
+
+def mask_snow_ndfsi_chunk(
+    chunk:           xr.DataArray,
+    ndfsi:           xr.DataArray,
+    ndfsi_threshold: float = 0.4,
+    background_pct:  float = 0.05,
+) -> tuple[xr.DataArray, np.ndarray]:
+    """
+    Returns:
+        chunk_masked  : EVI2 with snow pixels replaced by background
+        ndfsi_hit_cnt : (y, x) int16 array — number of timesteps masked
+                        per pixel, 0 = never masked
+    """
+    # Reindex NDFSI onto EVI2 time axis — some EVI2 acquisition dates may
+    # have no companion NDFSI file; those timesteps get NaN which evaluates
+    # False in snow_mask, leaving the EVI2 value
+    ndfsi = ndfsi.reindex(time=chunk.time, method=None)
+    background = (
+        chunk
+        .quantile(background_pct, dim="time", skipna=True)
+        .drop_vars("quantile", errors="ignore")
+        .clip(min=0.0)
+    )
+    snow_mask     = ndfsi > ndfsi_threshold
+    ndfsi_hit_cnt = snow_mask.sum(dim="time").values.astype(np.int16)   # (y, x)
+
+    print(f"  NDFSI masked : {int((ndfsi_hit_cnt > 0).sum()):,} px affected | "
+          f"{int(ndfsi_hit_cnt.sum()):,} total obs replaced "
+          f"(max {int(ndfsi_hit_cnt.max())} per px)")
+
+    return chunk.where(~snow_mask, other=background), ndfsi_hit_cnt
+
+
 def calc_obs_snow_background(
-    chunk:                    xr.DataArray,
-    threshold_background_pct: float = 0.15,  # fraction of amplitude above min
-    low_pct:                  float = 0.10,  # percentile of all valid obs
-    snow_doy_start:           int   = 300,
-    snow_doy_end:             int   = 100,
-    min_snow_obs:             int   = 3,
+        chunk: xr.DataArray,
+        low_pct: float = 0.10,
+        snow_doy_start: int = 300,
+        snow_doy_end: int = 100,
+        min_snow_obs: int = 3,
+        debug_y: int =  None,
+        debug_x: int = None,
 ) -> xr.DataArray:
-
-    doy       = chunk.time.dt.dayofyear
+    doy = chunk.time.dt.dayofyear
     snow_mask = (doy >= snow_doy_start) | (doy <= snow_doy_end)
-    snow_obs  = chunk.isel(time=snow_mask)
-    n_valid   = snow_obs.notnull().sum(dim="time")
+    snow_obs = chunk.isel(time=snow_mask)
+    n_valid = snow_obs.notnull().sum(dim="time")
 
-    # Path 1: winter obs available: low percentile of winter window
+    # Path 1: winter obs available
     snow_background = (
         snow_obs
         .quantile(low_pct, dim="time", skipna=True)
@@ -876,51 +1051,59 @@ def calc_obs_snow_background(
         .clip(min=0.0)
     )
 
-    # Path 2: no winter obs (Arctic)
-    #   low percentile of ALL valid obs + amplitude fraction
-    #   this sits at the dormant floor, not dragged by noise/edge obs
+    # Path 2: no winter obs (Arctic / Sparse winter data)
     all_low = (
         chunk
         .quantile(low_pct, dim="time", skipna=True)
         .drop_vars("quantile", errors="ignore")
         .clip(min=0.0)
     )
-    chunk_min = chunk.min(dim="time", skipna=True)
-    chunk_max = chunk.max(dim="time", skipna=True)
-    amplitude = chunk_max - chunk_min
+    precentile_background = all_low.clip(min=0.0)
 
-    # floor = low percentile + small amplitude fraction
-    # prevents background from sitting below real dormant signal
-    amplitude_background = (all_low + amplitude * threshold_background_pct).clip(min=0.0)
+    print(f"  snow_background    : min={float(snow_background.min(skipna=True)):.4f} "
+          f"mean={float(snow_background.mean(skipna=True)):.4f} "
+          f"max={float(snow_background.max(skipna=True)):.4f}")
+    print(f"  amplitude_background: min={float(precentile_background.min(skipna=True)):.4f} "
+          f"mean={float(precentile_background.mean(skipna=True)):.4f} "
+          f"max={float(precentile_background.max(skipna=True)):.4f}")
 
-    print(f"  snow_background    : min={float(snow_background.min()):.4f} "
-          f"mean={float(snow_background.mean()):.4f} "
-          f"max={float(snow_background.max()):.4f}")
-    print(f"  amplitude_background: min={float(amplitude_background.min()):.4f} "
-          f"mean={float(amplitude_background.mean()):.4f} "
-          f"max={float(amplitude_background.max()):.4f}")
-
-    background = xr.where(n_valid >= min_snow_obs, snow_background, amplitude_background)
+    background = xr.where(n_valid >= min_snow_obs, snow_background, precentile_background)
     background = background.drop_vars("quantile", errors="ignore")
 
-    print(f"  final background   : min={float(background.min()):.4f} "
-          f"mean={float(background.mean()):.4f} "
-          f"max={float(background.max()):.4f}")
+    # --- Pixel-Specific Debug Block ---
+    if debug_y is not None and debug_x is not None:
+        try:
+            pix_valid = int(n_valid.isel(y=debug_y, x=debug_x).values)
+            pix_p1 = float(snow_background.isel(y=debug_y, x=debug_x).values)
+            pix_p2 = float(precentile_background.isel(y=debug_y, x=debug_x).values)
+            pix_final = float(background.isel(y=debug_y, x=debug_x).values)
+
+            print(f"\n  [BG Debug] Pixel (y={debug_y}, x={debug_x}):")
+            print(f"    -> Valid Winter Obs (DOY <{snow_doy_end} | >{snow_doy_start}): {pix_valid}")
+            print(f"    -> Path 1 (Winter 10%): {pix_p1:.4f}")
+            print(f"    -> Path 2 (All-Year 10%): {pix_p2:.4f}")
+            print(f"    -> Final Chosen BG: {pix_final:.4f} (Used Path {1 if pix_valid >= min_snow_obs else 2})")
+        except Exception as e:
+            print(f"  [BG Debug] Could not extract pixel ({debug_y}, {debug_x}): {e}")
 
     return background
-    
 
+
+##################################################
+##### Main phenology orchestrator function #######
 def full_pipeline_chunk(chunk: xr.DataArray,
+                        ndfsi: xr.DataArray = None,
                         doy_data: xr.DataArray = None,
                         apply_threshold: bool = True,
                         min_evi_threshold: float = -1.0,
                         max_evi_threshold: float = 1.0,
                         threshold_greenup_pct: float = 0.15,
-                        fill_snow_gaps: bool = False,
                         despike: bool = True,
                         despike_max_gap: int = 45,
                         despike_abs_threshold: float = 0.1,
                         despike_rel_threshold: float = 2.0,
+                        use_infill: bool = True,
+                        smoother: str = "spline",
                         target_year: int = None,
                         testing_mode: bool = False,
                         _pool = None,
@@ -931,10 +1114,13 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     Pipeline:
         1. Apply EVI thresholds: ensures any anomalous EVI values are clipped
-        2. TBD Positive/bright pixel filtering
+        2. Mask snow pixels using NDFSI
         3. De-spike (three-point method): removes
-        4. Interpolate gaps
-        5. Calculate annual phenometrics
+        4. Infill gaps: Use the 36 month time series to fill in gaps in target year
+        5. Calculate scene quality pixel counts
+        6. Fit spline and generate synthetic daily time series 
+        7. Fill snow and non-growing season gaps (useful for snowy climates)
+        8. Calculate annual phenometrics
 
     """
     metric_mapping = {
@@ -952,10 +1138,13 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         'greenup_threshold': 'greenup_threshold',
         'auc_full': 'auc_full',
         'auc_net': 'auc_net',
-        'greenup_rate': 'greenup_rate',
-        'greenup_rate_doy': 'greenup_rate_doy',
-        'senescence_rate': 'senescence_rate',
-        'senescence_rate_doy': 'senescence_rate_doy'
+        'mid_greenup_doy': 'mid_greenup_doy',
+        'mid_greendown_doy': 'mid_greendown_doy',
+        # 'greenup_rate': 'greenup_rate',
+        # 'greenup_rate_doy': 'greenup_rate_doy',
+        # 'senescence_rate': 'senescence_rate',
+        # 'senescence_rate_doy': 'senescence_rate_doy',
+        'qa_valid_metrics': 'qa_valid_metrics'
         # 'mean_revisit_time': 'mean_revisit_time',
         # 'quality_pixel_cnt': 'quality_pixel_cnt'
     }
@@ -971,117 +1160,244 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             max_evi_threshold
         )
 
+    # Step 2: Snow masking
+    ndfsi_hit_cnt = None
+    if ndfsi is not None:
+        print("Step 1b: NDFSI snow masking")
+        chunk, ndfsi_hit_cnt = mask_snow_ndfsi_chunk(chunk, ndfsi)
+
     chunk_post_threshold = chunk.copy(deep=True) if testing_mode else None
 
-    # TODO Step: Positive/Bright pixel filtering (blue and red bands)
-    
-    # Step 2: Negative pixel filtering using DOY (EVI2 despiking - cloud shadows)
+    # Step 3: Negative pixel filtering using DOY (EVI2 despiking - cloud shadows)
     # - uses target year +/- 1 year, if edge case remove the non-existing year
     if despike:
-        print("Step2: Despiking")
+        print("Step3 : Despiking")
         chunk = despike_timeseries_chunk(
             chunk,
             max_gap_days=despike_max_gap,
             abs_threshold=despike_abs_threshold,
             rel_threshold=despike_rel_threshold,
+            # debug_pixel=(1,3),
         )
         target_obs_despiked = chunk.sel(time=str(target_year))
-        target_obs_raw  = chunk_post_threshold.sel(time=str(target_year)) if testing_mode else None
+        target_obs_raw = chunk_post_threshold.sel(time=str(target_year)) if testing_mode else None
         if testing_mode:
             removed = target_obs_raw.notnull() & target_obs_despiked.isnull()
-            removed_times = target_obs_raw.time[removed.any(dim=["y", "x"])].values
-            
-            print(f"  Despiked dates in {target_year}:")
-            for t in removed_times:
-                print(f"    {pd.Timestamp(t).date()}")
-            
+
     chunk_post_despike = chunk.copy(deep=True) if testing_mode else None
 
-    # Step 3: calculate scene revisit and quality pixels before the spline fit, 365 DOY data is generated
-    print("Step3: Scene quality metrics")
+    # -----------------------------------------------------------------------------------------
+    # Step 3b: Context-year gap infill
+    # Uses despiked observations from context years to fill gaps in the
+    # target year before the spline sees the data.
+    context_infill_diagnostics = None
+    target_da_for_spline = chunk.sel(time=str(target_year))  # default: no infill
+
+    use_context_months = get_context_months_from_gaps(chunk=chunk, target_year=target_year)
+    context_years_present = sorted({
+        int(y) for y in chunk.time.dt.year.values
+        if int(y) != target_year
+    })
+
+    if len(context_years_present) >= 1 and use_infill == True:
+        print("Step 3b: Context-year observation infill")
+        target_da_for_spline, context_infill_diagnostics = build_context_infilled_observations(
+            chunk_despiked=chunk,  # full 3-yr despiked DataArray
+            target_year=target_year,
+            n_harmonics=3,
+            min_similarity=0.60,  # tune: lower = more permissive infill
+            scale_to_target=True,
+            testing_mode=testing_mode,
+        )
+        # Rebuild a chunk that contains the infilled target year so the spline
+        # fitter receives the augmented observations
+        other_years = chunk.sel(
+            time=~chunk.time.dt.year.isin([target_year])
+        )
+        chunk_for_spline = xr.concat(
+            [other_years, target_da_for_spline],
+            dim="time"
+        ).sortby("time")
+    else:
+        print("Step 3b: Context infill skipped "
+              f"(use_context_months={use_context_months}, "
+              f"context_years={context_years_present})")
+        chunk_for_spline = chunk
+
+    chunk_post_context_infill = chunk_for_spline.copy(deep=True) if testing_mode else None
+
+    chunk_for_spline = despike_timeseries_chunk(
+        chunk_for_spline,
+        max_gap_days=despike_max_gap,
+        abs_threshold=despike_abs_threshold,
+        rel_threshold=despike_rel_threshold,
+    )
+
+    # Step 4: calculate scene revisit and quality pixels before the spline fit, 365 DOY data is generated
+    print("Step 4: Scene quality metrics")
     scene_mean_revisit, scene_quality_pixels = compute_scene_quality_metrics(chunk, target_year)
 
     valid_timesteps = (~np.isnan(chunk.values)).any(axis=(1, 2)).sum()
     if valid_timesteps == 0:
-        print(f"  WARNING: chunk has 0 valid timesteps for {target_year}. All metrics will be NaN — skipping spline and phenometrics.")
+        print(
+            f"  WARNING: chunk has 0 valid timesteps for {target_year}. All metrics will be NaN — skipping spline and phenometrics.")
         return {
             f'{name}_{target_year}': np.full((chunk.shape[1], chunk.shape[2]), np.nan, dtype=np.float32)
-                for name in metric_mapping.values()
+            for name in metric_mapping.values()
         } | {
             f'mean_revisit_time_{target_year}': scene_mean_revisit,
             f'quality_pixel_cnt_{target_year}': scene_quality_pixels,
         }
-        
-    # Step 4: apply penalized cubic spline interpolation
-    print("Step 4: Apply spline")
-    use_context_months = get_context_months_from_gaps(chunk=chunk,target_year=target_year)    
-    fill_snow_gaps     = not use_context_months 
+
+    # Step 5: apply penalized cubic spline interpolation
+    background_threshold = calc_obs_snow_background(chunk_for_spline)
+    print("Step 5: Apply spline")
+    fill_snow_gaps = not use_context_months
+
     print(f"  use_context_months : {use_context_months}")
-    print(f"  fill_snow_gaps     : {fill_snow_gaps}")  
-    
+    print(f"  fill_snow_gaps     : {fill_snow_gaps}")
+
     smoothed_daily = smooth_evi_chunk_for_year(
-        chunk,
+        chunk_for_spline,
         target_year,
+        smoother=smoother,
         testing_mode=testing_mode,
         use_context_months=use_context_months,
         _pool=_pool,
         n_jobs=n_jobs
     )
+
+    # Step 5b: Spline Floor clamp
+    # Prevent the spline from sinusoidally dipping below the lowest actual observation. This fixes inflated amplitudes esp. in multiple growing seasons.
+    # obs_min = chunk_for_spline.min(dim="time", skipna=True)
+    # smoothed_daily = xr.where(smoothed_daily < obs_min, obs_min, smoothed_daily)
+    # chunk_post_spline = smoothed_daily.copy(deep=True) if testing_mode else None
+
+    smoothed_daily = xr.where(smoothed_daily < background_threshold, background_threshold, smoothed_daily)
     chunk_post_spline = smoothed_daily.copy(deep=True) if testing_mode else None
-    
+
     if fill_snow_gaps:
-        # Step 5: Fill snow gaps using naive min EVI2 value
-        print("Step 5: Snow gap fill", flush=True)
-        background_threshold = calc_obs_snow_background(chunk) 
-        target_obs  = chunk.sel(time=str(target_year))
+        # Step 6: Fill snow gaps using naive min EVI2 value
+        print("Step 6: Snow gap fill", flush=True)
+        target_obs = chunk_for_spline.sel(time=str(target_year))
         is_valid = target_obs.notnull()
-        has_any   = is_valid.any(dim="time")              
-        first_idx = is_valid.argmax(dim="time")            
-        last_idx  = (target_obs.sizes["time"] - 1 
-                     - is_valid.isel(time=slice(None, None, -1)).argmax(dim="time"))                                              
+        has_any = is_valid.any(dim="time")
+
+        # ID first/last observations
+        first_idx = is_valid.argmax(dim="time")
+        last_idx = (target_obs.sizes["time"] - 1 - is_valid.isel(time=slice(None, None, -1)).argmax(dim="time"))
         first_obs_doy = target_obs.time.dt.dayofyear.isel(time=first_idx).where(has_any)
-        last_obs_doy  = target_obs.time.dt.dayofyear.isel(time=last_idx).where(has_any)
+        last_obs_doy = target_obs.time.dt.dayofyear.isel(time=last_idx).where(has_any)
+
         smoothed_year = smoothed_daily.sel(time=str(target_year))
-        daily_doy     = smoothed_year.time.dt.dayofyear
-        bg            = background_threshold.drop_vars("quantile", errors="ignore")
-    
+        daily_doy = smoothed_year.time.dt.dayofyear
+        bg = background_threshold.drop_vars("quantile", errors="ignore")
+
+        # subset target year data to valid observations
         before_first = daily_doy < first_obs_doy
-        after_last   = daily_doy > last_obs_doy
-        no_data      = ~has_any
-    
-        # Spline value at the exact boundary day [y, x]
-        first_doy_idx  = (daily_doy == first_obs_doy)
-        last_doy_idx   = (daily_doy == last_obs_doy)
-    
-        spline_at_first = smoothed_year.where(first_doy_idx).max(dim="time")
-        spline_at_last  = smoothed_year.where(last_doy_idx).max(dim="time")
-    
-        # Fill = min(background, spline at boundary) — never step up OR down
-        lead_fill  = xr.where(spline_at_first < bg, spline_at_first, bg)
-        trail_fill = xr.where(spline_at_last  < bg, spline_at_last,  bg)
-    
-        smoothed_year = smoothed_year.where(~(before_first | no_data), other=lead_fill)
-        smoothed_year = smoothed_year.where(~(after_last   | no_data), other=trail_fill)    
-        smoothed_year_pheno = smoothed_daily.sel(time=str(target_year)).where(
-            (daily_doy >= first_obs_doy) & (daily_doy <= last_obs_doy)
+        after_last = daily_doy > last_obs_doy
+        outside_obs = (before_first | after_last | ~has_any)
+
+        # Clamp runaway tails outside observation window
+        # Extract the spline's value at the exact DOY of the first and last valid observations.
+        val_at_first = smoothed_year.where(daily_doy == first_obs_doy).max(dim="time")
+        val_at_last = smoothed_year.where(daily_doy == last_obs_doy).max(dim="time")
+
+        # Identify runaway positive tails: if the extrapolated spline has a positive end behavior
+        # than the boundary observation, do not conisder it a missed pheno cycle. Clamp to min/background.
+        runaway_pre = before_first & (smoothed_year > val_at_first)
+        runaway_post = after_last & (smoothed_year > val_at_last)
+        is_runaway = runaway_pre | runaway_post
+
+        # Spline is kept where > floor but is clamped to bg if it runs away upward OR if it drops below bg.
+        smoothed_year = xr.where(
+            is_runaway,
+            bg,  # Replace runaway positive tails directly to bg
+            xr.where(  # else, where runaways
+                outside_obs,  # if beyond observation window
+                smoothed_year.clip(min=bg),  # replace with BG where downward extrapolations occur at tails
+                smoothed_year  # Inside obs window: untouched
+            )
         )
+
+        #  Transition DOYs
+        spline_above_bg = smoothed_year > bg
+        rising_idx = spline_above_bg.argmax(dim="time")
+        falling_idx = (spline_above_bg.sizes["time"] - 1
+                       - spline_above_bg.isel(time=slice(None, None, -1))
+                       .argmax(dim="time"))
+        any_above = spline_above_bg.any(dim="time")
+        rising_doy = daily_doy.isel(time=rising_idx).where(any_above)
+        falling_doy = daily_doy.isel(time=falling_idx).where(any_above)
+
+        # Prevent post-season spline rebound
+        vals = smoothed_year.values.copy()  # (T, ny, nx)
+        doys_1d = daily_doy.values  # (T,)
+        bg_vals = bg.values  # (ny, nx)
+        ny, nx = vals.shape[1], vals.shape[2]
+
+        rise_doy = rising_doy.values  # (ny, nx)
+        fall_doy = falling_doy.values  # (ny, nx)
+
+        # Spline value at the exact transition DOYs = ceiling for outside region
+        rise_idx_1d = np.argmin(np.abs(doys_1d[:, None, None] - rise_doy[None]), axis=0)
+        fall_idx_1d = np.argmin(np.abs(doys_1d[:, None, None] - fall_doy[None]), axis=0)
+
+        # (ny, nx) — the spline value at each pixel's transition DOY
+        spline_at_rise = vals[rise_idx_1d, np.arange(ny)[:, None], np.arange(nx)[None, :]]
+        spline_at_fall = vals[fall_idx_1d, np.arange(ny)[:, None], np.arange(nx)[None, :]]
+
+        for t_idx in range(len(doys_1d)):
+            d = doys_1d[t_idx]
+            before_rise = d < rise_doy  # (ny, nx)
+            after_fall = d > fall_doy
+
+            # Pre-season: clamp to [bg, spline_at_rise]
+            vals[t_idx] = np.where(
+                before_rise,
+                np.clip(vals[t_idx], bg_vals, spline_at_rise),
+                vals[t_idx]
+            )
+            # Post-season: clamp to [bg, spline_at_fall]
+            vals[t_idx] = np.where(
+                after_fall,
+                np.clip(vals[t_idx], bg_vals, spline_at_fall),
+                vals[t_idx]
+            )
+
+        smoothed_year = smoothed_year.copy(data=vals)
+
+        smoothed_year_pheno = smoothed_year.where(
+            (daily_doy >= rising_doy) & (daily_doy <= falling_doy)
+        )
+
     else:
+        smoothed_year = smoothed_daily
         smoothed_year_pheno = smoothed_daily.sel(time=str(target_year))
-        
+
     chunk_post_snow_fill = smoothed_year.copy(deep=True) if testing_mode else None
 
-    # Step 6: Annual phenometrics
-    # smoothed_year = smoothed_daily.where(smoothed_daily.time.dt.year == target_year)        
-    print("  Step 7: Calculate phenometrics")
+    # Step 7: Annual phenometrics
+    print("Step 7: Calculate phenometrics")
+
+    if use_context_months:
+        chunk_for_pheno = smoothed_year_pheno
+    else:
+        chunk_for_pheno = smoothed_year_pheno.where(smoothed_year_pheno.time.dt.year == target_year)
+
     pheno = annual_phenometrics_chunk(
-        smoothed_year_pheno,
-        threshold_greenup_pct=threshold_greenup_pct,
+        chunk_for_pheno,
         year=target_year,
+        threshold_greenup_pct=threshold_greenup_pct,
     )
+
     results = {}
     for internal_name, output_name in metric_mapping.items():
-        results[f'{output_name}_{target_year}'] = pheno[internal_name][0]
-        
+        # Cycle 0 = Primary, Cycle 1 = Secondary
+        results[f'{output_name}_{target_year}_primary'] = pheno[internal_name][0]
+        results[f'{output_name}_{target_year}_secondary'] = pheno[internal_name][1]
+
+    results[f'cycle_count_{target_year}'] = pheno['cycle_count']
     results[f'mean_revisit_time_{target_year}'] = scene_mean_revisit
     results[f'quality_pixel_cnt_{target_year}'] = scene_quality_pixels
 
@@ -1090,8 +1406,12 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             'original': chunk_original,
             'post_threshold': chunk_post_threshold,
             'post_despike': chunk_post_despike,
+            'post_context_infill': chunk_post_context_infill,
+            'context_infill_diag': context_infill_diagnostics,
             'post_spline': chunk_post_spline,
             'post_snow_fill': chunk_post_snow_fill,
+            'ndfsi_hit_cnt': ndfsi_hit_cnt,
+            'ndfsi': ndfsi.sel(time=str(target_year)) if ndfsi is not None else None,
         }
 
     return results
