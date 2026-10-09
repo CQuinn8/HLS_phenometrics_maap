@@ -1,6 +1,7 @@
 import numpy as np
 import xarray as xr
 from typing import Tuple, Optional
+import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1.  DOY harmonic curve fitter  (vectorised over all pixels at once)

@@ -1206,7 +1206,6 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             target_year=target_year,
             n_harmonics=3,
             min_similarity=0.60,  # tune: lower = more permissive infill
-            scale_to_target=True,
             testing_mode=testing_mode,
         )
         # Rebuild a chunk that contains the infilled target year so the spline
