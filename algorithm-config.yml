@@ -16,6 +16,10 @@ inputs:
     description: e.g. 2020
     name: target_year
     required: true
+  - default: 'false'
+    description: e.g. true
+    name: save_scenes
+    required: false
 queue: maap-dps-worker-64gb
 repository_url: https://github.com/CQuinn8/HLS_phenometrics_maap
 run_command: HLS_phenometrics_maap/run.sh
