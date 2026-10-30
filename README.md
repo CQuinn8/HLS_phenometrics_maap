@@ -15,7 +15,7 @@ Phenometrics are based on a synthetically spline fit EVI2 time series for each p
 
 
 ## Phenological metrics
-All metrics are calculated for up to two growing seasons identified as valid cycles with the highest peak EVI2, where applicable.
+All metrics are calculated for up to two growing seasons identified as valid cycles with the highest peak EVI2, where applicable. Greenup onset is based on the DOY when a valid growing cycle first exceeds the greenup threshold calculated as 15% * amplitude of the current growing cycle.
 - amplitude: peak EVI2 - min EVI2
 - auc_full: the positive area under the curve bound by the DOYs on the x axis for greenup DOY and dormancy DOY
 - auc_net: the area under the curve bound by greenup and dormancy DOYs by constrained horizontally by the y = min SVI
@@ -26,7 +26,7 @@ All metrics are calculated for up to two growing seasons identified as valid cyc
 - greenup_evi: corresponding EVI2 to greenup DOY (may be higher than threshold)
 - greenup_rate: on the post greenup and pre peak ascending arm, the maximum first derivative or highest slope rate of change
 - growing_season_length: the days between greenup DOY and dormancy DOY (Dormancy DOY - Greenup DOY)
-- max_doy: DOY for max EVI2 
+- max_doy: DOY for max EVI2
 - max_evi: global maximum (peak) EVI2 value
 - mean_evi: the arithmetic average 
 - mid_greenup_doy: the DOY corresponding to 50% of the amplitude on the ascending seasonal arm
