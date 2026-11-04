@@ -94,37 +94,58 @@ def _process_worker_slice(
                 w_valid[y_valid < lo] *= 2.0
                 w_valid[y_valid > hi] *= 2.0
 
-            # 5. Knots: trim the precomputed time series to this pixel's range
-            x_range  = x_valid[-1] - x_valid[0]            
+            # 5. Knots: place knots between data points based on indices
             if use_context_months:
-                n_knots  = min(max(len(x_valid) // 3, 12), len(x_valid) - k - 1)
-                interior = np.unique(
-                    np.percentile(x_valid, np.linspace(10, 90, n_knots))
-                )
-                interior = interior[
-                    (interior > x_valid[0]) & (interior < x_valid[-1])
-                ]
-                if len(interior) > 1:
-                    keep     = np.concatenate([[True], np.diff(interior) >= 10.0])
-                    interior = interior[keep]
+                # Ensure enough points for the spline degree
+                if len(x_valid) <= k + 2:
+                    continue
+
+                n_knots = min(max(len(x_valid) // 3, 12), len(x_valid) - k - 2)                
+                if n_knots > 0:
+                    # Space knots evenly in array indices, not time values
+                    step = max(len(x_valid) // (n_knots + 1), 1)
+                    idx_knots = np.arange(step, len(x_valid) - 1, step)
+                    
+                    # Place knot exactly halfway between two adjacent data points
+                    interior = (x_valid[idx_knots] + x_valid[idx_knots + 1]) / 2.0
+
+                    if len(interior) > 1:
+                        keep = np.concatenate([[True], np.diff(interior) >= 10.0])
+                        interior = interior[keep]
+                else:
+                    interior = np.array([])
+
                 if len(interior) < 3:
                     continue
 
             # 6. Fit spline to full context observation dates and then evaluate on daily ts
             if not use_context_months:
-                peak_idx    = np.argmax(y_valid)
-                peak_t      = x_valid[peak_idx]
-                pre_peak_t  = x_valid[0] + (peak_t - x_valid[0]) * 0.5
-                post_peak_t = peak_t     + (x_valid[-1] - peak_t) * 0.5
-                interior    = np.array([pre_peak_t, peak_t, post_peak_t])
-                interior    = interior[
-                    (interior > x_valid[0] + 1) & (interior < x_valid[-1] - 1)
-                ]
+                peak_idx = np.argmax(y_valid)
+                
+                # Need enough points before and after peak to place knots
+                if peak_idx < 2 or peak_idx > len(x_valid) - 3:
+                    continue
+                    
+                # Find midpoints in index space
+                pre_peak_idx  = peak_idx // 2
+                post_peak_idx = peak_idx + (len(x_valid) - peak_idx) // 2
+                
+                # Place knots between actual data points to avoid empty intervals
+                pre_peak_t  = (x_valid[pre_peak_idx] + x_valid[pre_peak_idx + 1]) / 2.0
+                peak_knot_t = (x_valid[peak_idx] + x_valid[peak_idx + 1]) / 2.0
+                post_peak_t = (x_valid[post_peak_idx] + x_valid[post_peak_idx + 1]) / 2.0
+                
+                interior = np.array([pre_peak_t, peak_knot_t, post_peak_t])
+                
                 if len(interior) < 2:
                     continue
-                spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=3)
-            else:
-                spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=k)
+
+            try:
+                fit_k = 3 if not use_context_months else k
+                spl = LSQUnivariateSpline(x_valid, y_valid, interior, w=w_valid, k=fit_k)
+            except ValueError:
+                # If abnormal data causes an error, skip pixel
+                continue
 
             result[:, local_yi, xi] = np.clip(
                 spl(t_daily), value_min, value_max
@@ -1151,6 +1172,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     
     chunk_original = chunk.copy(deep=True) if testing_mode else None
 
+    # -------------------------------------------------------------------------
     # Step 1: Threshold
     print("Step1: Thresholding")
     if apply_threshold:
@@ -1160,6 +1182,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             max_evi_threshold
         )
 
+    # -------------------------------------------------------------------------
     # Step 2: Snow masking
     ndfsi_hit_cnt = None
     if ndfsi is not None:
@@ -1167,7 +1190,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         chunk, ndfsi_hit_cnt = mask_snow_ndfsi_chunk(chunk, ndfsi)
 
     chunk_post_threshold = chunk.copy(deep=True) if testing_mode else None
-
+   
+    # -------------------------------------------------------------------------
     # Step 3: Negative pixel filtering using DOY (EVI2 despiking - cloud shadows)
     # - uses target year +/- 1 year, if edge case remove the non-existing year
     if despike:
@@ -1186,8 +1210,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     chunk_post_despike = chunk.copy(deep=True) if testing_mode else None
 
-    # -----------------------------------------------------------------------------------------
-    # Step 3b: Context-year gap infill
+    # -------------------------------------------------------------------------
+    # Step 4: Context-year gap infill
     # Uses despiked observations from context years to fill gaps in the
     # target year before the spline sees the data.
     context_infill_diagnostics = None
@@ -1200,7 +1224,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     })
 
     if len(context_years_present) >= 1 and use_infill == True:
-        print("Step 3b: Context-year observation infill")
+        print("Step 4: Context-year observation infill")
         target_da_for_spline, context_infill_diagnostics = build_context_infilled_observations(
             chunk_despiked=chunk,  # full 3-yr despiked DataArray
             target_year=target_year,
@@ -1218,7 +1242,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             dim="time"
         ).sortby("time")
     else:
-        print("Step 3b: Context infill skipped "
+        print("Step 4: Context infill skipped "
               f"(use_context_months={use_context_months}, "
               f"context_years={context_years_present})")
         chunk_for_spline = chunk
@@ -1231,9 +1255,10 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         abs_threshold=despike_abs_threshold,
         rel_threshold=despike_rel_threshold,
     )
-
-    # Step 4: calculate scene revisit and quality pixels before the spline fit, 365 DOY data is generated
-    print("Step 4: Scene quality metrics")
+    
+    # -------------------------------------------------------------------------
+    # Step 5: calculate scene revisit and quality pixels before the spline fit, 365 DOY data is generated
+    print("Step 5: Scene quality metrics")
     scene_mean_revisit, scene_quality_pixels = compute_scene_quality_metrics(chunk, target_year)
 
     valid_timesteps = (~np.isnan(chunk.values)).any(axis=(1, 2)).sum()
@@ -1247,10 +1272,11 @@ def full_pipeline_chunk(chunk: xr.DataArray,
             f'mean_revisit_time_{target_year}': scene_mean_revisit,
             f'quality_pixel_cnt_{target_year}': scene_quality_pixels,
         }
-
-    # Step 5: apply penalized cubic spline interpolation
+        
+    # -------------------------------------------------------------------------
+    # Step 6: apply penalized cubic spline interpolation
     background_threshold = calc_obs_snow_background(chunk_for_spline)
-    print("Step 5: Apply spline")
+    print("Step 6: Apply spline")
     fill_snow_gaps = not use_context_months
 
     print(f"  use_context_months : {use_context_months}")
@@ -1266,7 +1292,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         n_jobs=n_jobs
     )
 
-    # Step 5b: Spline Floor clamp
+    # Step 6b: Spline Floor clamp
     # Prevent the spline from sinusoidally dipping below the lowest actual observation. This fixes inflated amplitudes esp. in multiple growing seasons.
     # obs_min = chunk_for_spline.min(dim="time", skipna=True)
     # smoothed_daily = xr.where(smoothed_daily < obs_min, obs_min, smoothed_daily)
@@ -1275,9 +1301,10 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     smoothed_daily = xr.where(smoothed_daily < background_threshold, background_threshold, smoothed_daily)
     chunk_post_spline = smoothed_daily.copy(deep=True) if testing_mode else None
 
+    # -------------------------------------------------------------------------
+    # Step 7: Fill snow gaps using naive min EVI2 value
     if fill_snow_gaps:
-        # Step 6: Fill snow gaps using naive min EVI2 value
-        print("Step 6: Snow gap fill", flush=True)
+        print("Step 7: Snow gap fill", flush=True)
         target_obs = chunk_for_spline.sel(time=str(target_year))
         is_valid = target_obs.notnull()
         has_any = is_valid.any(dim="time")
@@ -1376,8 +1403,9 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     chunk_post_snow_fill = smoothed_year.copy(deep=True) if testing_mode else None
 
-    # Step 7: Annual phenometrics
-    print("Step 7: Calculate phenometrics")
+    # -------------------------------------------------------------------------
+    # Step 8: Annual phenometrics
+    print("Step 8: Calculate phenometrics")
 
     if use_context_months:
         chunk_for_pheno = smoothed_year_pheno
@@ -1390,6 +1418,33 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         threshold_greenup_pct=threshold_greenup_pct,
     )
 
+    # -------------------------------------------------------------------------
+    # Step 9: Calculate Goodness-of-Fit (RMSE, R2) for Target Year
+    print("Step 9: Calculate goodness-of-fit metrics")    
+    # 1. Get the actual QA'd observations for the target year
+    obs_target_year = chunk_for_spline.sel(time=str(target_year))
+    
+    # 2. Get corresponding predictions from the final pheno time series
+    pred_target_year = chunk_for_pheno.sel(time=obs_target_year.time, method='nearest')
+    
+    # 3. Create a joint mask
+    valid_mask = obs_target_year.notnull() & pred_target_year.notnull()
+    obs_valid  = obs_target_year.where(valid_mask)
+    pred_valid = pred_target_year.where(valid_mask)
+    
+    # 4. Calculate RMSE
+    residuals = obs_valid - pred_valid
+    rmse_da   = np.sqrt((residuals ** 2).mean(dim="time", skipna=True))
+    
+    # 5. Calculate R-squared
+    ss_res   = (residuals ** 2).sum(dim="time", skipna=True)
+    obs_mean = obs_valid.mean(dim="time", skipna=True)
+    ss_tot   = ((obs_valid - obs_mean) ** 2).sum(dim="time", skipna=True)
+    
+    r2_da = 1.0 - (ss_res / ss_tot)
+    r2_da = r2_da.where(ss_tot > 1e-10, 0.0)  # Handle 0 variance/flat line cases
+
+    # -------------------------------------------------------------------------
     results = {}
     for internal_name, output_name in metric_mapping.items():
         # Cycle 0 = Primary, Cycle 1 = Secondary
@@ -1399,6 +1454,8 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     results[f'cycle_count_{target_year}'] = pheno['cycle_count']
     results[f'mean_revisit_time_{target_year}'] = scene_mean_revisit
     results[f'quality_pixel_cnt_{target_year}'] = scene_quality_pixels
+    results[f'spline_rmse_{target_year}'] = rmse_da.values
+    results[f'spline_r2_{target_year}']   = r2_da.values
 
     if testing_mode:
         results['_intermediate'] = {
