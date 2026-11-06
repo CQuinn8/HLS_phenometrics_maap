@@ -713,10 +713,12 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
     # Initialize output phenometric arrays (shape: n_cycles, ny, nx)
     core_metric_keys = [
         'annual_mean', 'annual_max', 'annual_max_doy', 'annual_min', 'annual_min_doy',
-        'greenup_evi', 'greenup_doy', 'greenup_threshold', 'dormancy_evi', 'dormancy_doy',
+        'greenup_evi2', 'greenup_doy', 'greenup_threshold', 'dormancy_evi2', 'dormancy_doy',
         'annual_amplitude', 'growing_season_length', 'auc_full', 'auc_net',
-        # 'greenup_rate', 'greenup_rate_doy', 'senescence_rate', 'senescence_rate_doy'
-        'mid_greenup_doy', 'mid_greendown_doy'
+        'mid_greenup_doy', 'mid_greenup_evi2', 
+        'maturity_doy', 'maturity_evi2',
+        'mid_greendown_doy', 'mid_greendown_evi2', 
+        'greendown_onset_doy', 'greendown_onset_evi2'
     ]
     metric_keys = core_metric_keys + ['qa_valid_metrics']
     metrics = {k: np.full((n_cycles, ny, nx), np.nan, dtype=np.float32) for k in metric_keys}
@@ -764,7 +766,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
 
                         if gu_end <= gu_start or gd_start >= gd_end:
                             current_cycles.append(
-                                {'peak_idx': current_peak, 'amp': -1.0, 'peak_evi': pixel_evi[current_peak]})
+                                {'peak_idx': current_peak, 'amp': -1.0, 'peak_evi2': pixel_evi[current_peak]})
                             continue
 
                         gu_segment = pixel_evi[gu_start:gu_end]
@@ -772,7 +774,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
 
                         if np.isnan(gu_segment).all() or np.isnan(gd_segment).all():
                             current_cycles.append(
-                                {'peak_idx': current_peak, 'amp': -1.0, 'peak_evi': pixel_evi[current_peak]})
+                                {'peak_idx': current_peak, 'amp': -1.0, 'peak_evi2': pixel_evi[current_peak]})
                             continue
 
                         gu_min_idx = gu_start + np.nanargmin(gu_segment)
@@ -785,12 +787,12 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                             'gu_min_idx': gu_min_idx,
                             'gd_min_idx': gd_min_idx,
                             'amp': amp,
-                            'peak_evi': pixel_evi[current_peak],
-                            'min_evi': pixel_evi[gu_min_idx]
+                            'peak_evi2': pixel_evi[current_peak],
+                            'min_evi2': pixel_evi[gu_min_idx]
                         })
 
                     # Find the smallest cycle (Smallest amplitude, Break ties using peak_evi for tight windows)
-                    smallest_cycle = min(current_cycles, key=lambda x: (x['amp'], x['peak_evi']))
+                    smallest_cycle = min(current_cycles, key=lambda x: (x['amp'], x['peak_evi2']))
 
                     # Threshold 2: cycle amplitude >= 0.1 and >= 35% global amplitude
                     if smallest_cycle['amp'] < 0.1 or smallest_cycle['amp'] < 0.35 * global_amp:
@@ -803,7 +805,6 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
 
             # 2. Filter cycles where the peak falls strictly within target year
             target_cycles = [c for c in valid_cycles if years_array[c['peak_idx']] == year]
-            cycle_count[yi, xi] = len(target_cycles)
 
             # Fallback: If peak logic failed, treat the target year as a single cycle
             if len(target_cycles) == 0:
@@ -825,16 +826,17 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                     target_cycles = [{
                         'peak_idx': p_idx, 'gu_min_idx': gu_min_idx, 'gd_min_idx': gd_min_idx,
                         'amp': pixel_evi[p_idx] - pixel_evi[gu_min_idx],
-                        'peak_evi': pixel_evi[p_idx], 'min_evi': pixel_evi[gu_min_idx]
+                        'peak_evi2': pixel_evi[p_idx], 'min_evi2': pixel_evi[gu_min_idx]
                     }]
 
-            target_cycles = sorted(target_cycles, key=lambda x: x['peak_evi'], reverse=True)[:n_cycles]
+            target_cycles = sorted(target_cycles, key=lambda x: x['peak_evi2'], reverse=True)[:n_cycles]
+            cycle_count[yi, xi] = len(target_cycles) 
 
             # 3. Calculate phenometrics accepted cycles
             for c_idx, cycle in enumerate(target_cycles):
-                metrics['annual_max'][c_idx, yi, xi] = cycle['peak_evi']
+                metrics['annual_max'][c_idx, yi, xi] = cycle['peak_evi2']
                 metrics['annual_max_doy'][c_idx, yi, xi] = nominal_doys[cycle['peak_idx']]
-                metrics['annual_min'][c_idx, yi, xi] = cycle['min_evi']
+                metrics['annual_min'][c_idx, yi, xi] = cycle['min_evi2']
                 metrics['annual_min_doy'][c_idx, yi, xi] = nominal_doys[cycle['gu_min_idx']]
                 metrics['annual_amplitude'][c_idx, yi, xi] = cycle['amp']
 
@@ -842,10 +844,9 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                 c_start, c_end = cycle['gu_min_idx'], cycle['gd_min_idx']
                 metrics['annual_mean'][c_idx, yi, xi] = np.nanmean(pixel_evi[c_start:c_end])
 
-                thresh_val = cycle['min_evi'] + (cycle['amp'] * threshold_greenup_pct)
-                mid_thresh_val = cycle['min_evi'] + (cycle['amp'] * 0.50)
-                # thresh_val_10pct = cycle['min_evi'] + (cycle['amp'] * 0.10)
-                # thresh_val_25pct = cycle['min_evi'] + (cycle['amp'] * 0.10)
+                thresh_val = cycle['min_evi2'] + (cycle['amp'] * threshold_greenup_pct)
+                mid_thresh_val = cycle['min_evi2'] + (cycle['amp'] * 0.50)
+                mat_thresh_val = cycle['min_evi2'] + (cycle['amp'] * 0.90)                 
                 metrics['greenup_threshold'][c_idx, yi, xi] = thresh_val
 
                 # 1. GREENUP - tracking backwards from peak
@@ -855,8 +856,8 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                 gu_abs_idx = np.nan  # Continuous index tracker for rates/lengths
 
                 if len(pre_evi) > 2:
-                    # pre_deriv = np.gradient(pre_evi, continuous_days[pre_mask]) # rate var
                     # Find the most immediate previous time before the peak that EVI dropped below threshold
+                    # 15% greenup                    
                     below_thresh = np.where(pre_evi <= thresh_val)[0]
                     if len(below_thresh) > 0:
                         i = below_thresh[-1]
@@ -869,7 +870,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                         else:
                             metrics['greenup_doy'][c_idx, yi, xi] = pre_doys[i]
                             gu_abs_idx = continuous_days[pre_mask][i]
-                        metrics['greenup_evi'][c_idx, yi, xi] = thresh_val
+                        metrics['greenup_evi2'][c_idx, yi, xi] = thresh_val
 
                     # # Steepest greenup
                     # if not np.isnan(gu_abs_idx):
@@ -880,7 +881,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                     #         metrics['greenup_rate'][c_idx, yi, xi] = pre_deriv[inflect_mask][inf_idx]
                     #         metrics['greenup_rate_doy'][c_idx, yi, xi] = pre_doys[inflect_mask][inf_idx]
 
-                    # Median Greenup Threshold (50% amplitude)
+                    # 50% Greenup (50% amplitude)
                     below_mid = np.where(pre_evi <= mid_thresh_val)[0]
                     if len(below_mid) > 0:
                         i = below_mid[-1]
@@ -890,6 +891,19 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                             metrics['mid_greenup_doy'][c_idx, yi, xi] = pre_doys[closest_idx]
                         else:
                             metrics['mid_greenup_doy'][c_idx, yi, xi] = pre_doys[i]
+                        metrics['mid_greenup_evi2'][c_idx, yi, xi] = mid_thresh_val
+                    
+                    # 90% Greenup (Maturity)
+                    below_mat = np.where(pre_evi <= mat_thresh_val)[0]
+                    if len(below_mat) > 0:
+                        i = below_mat[-1]
+                        if i < len(pre_evi) - 1:
+                            y0, y1 = pre_evi[i], pre_evi[i + 1]
+                            closest_idx = i if abs(y0 - mat_thresh_val) < abs(y1 - mat_thresh_val) else i + 1
+                            metrics['maturity_doy'][c_idx, yi, xi] = pre_doys[closest_idx]
+                        else:
+                            metrics['maturity_doy'][c_idx, yi, xi] = pre_doys[i]
+                        metrics['maturity_evi2'][c_idx, yi, xi] = mat_thresh_val
 
                 # 2. DORMANCY
                 post_mask = (continuous_days > cycle['peak_idx']) & (continuous_days <= cycle['gd_min_idx'])
@@ -898,8 +912,32 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                 dorm_abs_idx = np.nan
 
                 if len(post_evi) > 2:
-                    # post_deriv = np.gradient(post_evi, continuous_days[post_mask]) # used in rate
                     # Find the FIRST time after the peak that EVI drops below greenup threshold
+                    # 90% Greendown (Greendown Onset)
+                    below_mat = np.where(post_evi <= mat_thresh_val)[0]
+                    if len(below_mat) > 0:
+                        i = below_mat[0]
+                        if i > 0:
+                            y0, y1 = post_evi[i - 1], post_evi[i]
+                            closest_idx = i - 1 if abs(y0 - mat_thresh_val) < abs(y1 - mat_thresh_val) else i
+                            metrics['greendown_onset_doy'][c_idx, yi, xi] = post_doys[closest_idx]
+                        else:
+                            metrics['greendown_onset_doy'][c_idx, yi, xi] = post_doys[i]
+                        metrics['greendown_onset_evi2'][c_idx, yi, xi] = mat_thresh_val
+
+                    # 50% Greendown Threshold
+                    below_mid = np.where(post_evi <= mid_thresh_val)[0]
+                    if len(below_mid) > 0:
+                        i = below_mid[0]
+                        if i > 0:
+                            y0, y1 = post_evi[i - 1], post_evi[i]
+                            closest_idx = i - 1 if abs(y0 - mid_thresh_val) < abs(y1 - mid_thresh_val) else i
+                            metrics['mid_greendown_doy'][c_idx, yi, xi] = post_doys[closest_idx]
+                        else:
+                            metrics['mid_greendown_doy'][c_idx, yi, xi] = post_doys[i]
+                        metrics['mid_greendown_evi2'][c_idx, yi, xi] = mid_thresh_val
+                            
+                    # Dormancy (15% amplitude)
                     below_thresh = np.where(post_evi <= thresh_val)[0]
                     if len(below_thresh) > 0:
                         i = below_thresh[0]
@@ -912,7 +950,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                         else:
                             metrics['dormancy_doy'][c_idx, yi, xi] = post_doys[i]
                             dorm_abs_idx = continuous_days[post_mask][i]
-                        metrics['dormancy_evi'][c_idx, yi, xi] = thresh_val
+                        metrics['dormancy_evi2'][c_idx, yi, xi] = thresh_val
 
                     # # Steepest senescence
                     # if not np.isnan(dorm_abs_idx):
@@ -922,16 +960,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                     #         inf_idx = np.argmin(post_deriv[inflect_mask])
                     #         metrics['senescence_rate'][c_idx, yi, xi] = post_deriv[inflect_mask][inf_idx]
                     #         metrics['senescence_rate_doy'][c_idx, yi, xi] = post_doys[inflect_mask][inf_idx]
-                    # 50% Greendown Threshold
-                    below_mid = np.where(post_evi <= mid_thresh_val)[0]
-                    if len(below_mid) > 0:
-                        i = below_mid[0]
-                        if i > 0:
-                            y0, y1 = post_evi[i - 1], post_evi[i]
-                            closest_idx = i - 1 if abs(y0 - mid_thresh_val) < abs(y1 - mid_thresh_val) else i
-                            metrics['mid_greendown_doy'][c_idx, yi, xi] = post_doys[closest_idx]
-                        else:
-                            metrics['mid_greendown_doy'][c_idx, yi, xi] = post_doys[i]
+                    
 
                 # 3. AUC and 4. Growing Season Length calculations (Requires both ends)
                 if not np.isnan(gu_abs_idx) and not np.isnan(dorm_abs_idx):
@@ -944,7 +973,7 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                         gs_evi = gs_evi[gs_valid]
                         # Using dx=1 since indices are continuous days to prevent DOY wrap-around bugs
                         metrics['auc_full'][c_idx, yi, xi] = trapezoid(gs_evi, dx=1)
-                        metrics['auc_net'][c_idx, yi, xi] = trapezoid(gs_evi - cycle['min_evi'], dx=1)
+                        metrics['auc_net'][c_idx, yi, xi] = trapezoid(gs_evi - cycle['min_evi2'], dx=1)
 
         # Count the number of valid phenometrics created: a quality proxy
     metrics['qa_valid_metrics'] = np.zeros((n_cycles, ny, nx), dtype=np.float32)
@@ -959,7 +988,6 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
 
 ###############################################################################
 ##### Fucntions to help gap filling and non growing season ID #################
-
 def get_context_months_from_gaps(
         chunk: xr.DataArray,
         target_year: int,
@@ -1145,30 +1173,31 @@ def full_pipeline_chunk(chunk: xr.DataArray,
 
     """
     metric_mapping = {
-        'annual_mean': 'mean_evi',
-        'annual_max': 'max_evi',
-        'annual_min': 'min_evi',
+        'annual_mean': 'mean_evi2',
+        'annual_max': 'max_evi2',
+        'annual_min': 'min_evi2',
         'annual_max_doy': 'max_doy',
         'annual_amplitude': 'amplitude',
         'greenup_doy': 'greenup_doy',
         'dormancy_doy': 'dormancy_doy',
         'growing_season_length': 'growing_season_length',
         'annual_min_doy': 'min_doy',
-        'greenup_evi': 'greenup_evi',
-        'dormancy_evi': 'dormancy_evi',
+        'greenup_evi2': 'greenup_evi2',
+        'dormancy_evi2': 'dormancy_evi2',
         'greenup_threshold': 'greenup_threshold',
         'auc_full': 'auc_full',
         'auc_net': 'auc_net',
         'mid_greenup_doy': 'mid_greenup_doy',
+        'mid_greenup_evi2': 'mid_greenup_evi2',
+        'maturity_doy': 'maturity_doy',
+        'maturity_evi2': 'maturity_evi2',
         'mid_greendown_doy': 'mid_greendown_doy',
-        # 'greenup_rate': 'greenup_rate',
-        # 'greenup_rate_doy': 'greenup_rate_doy',
-        # 'senescence_rate': 'senescence_rate',
-        # 'senescence_rate_doy': 'senescence_rate_doy',
+        'mid_greendown_evi2': 'mid_greendown_evi2',
+        'greendown_onset_doy': 'greendown_onset_doy',
+        'greendown_onset_evi2': 'greendown_onset_evi2',
         'qa_valid_metrics': 'qa_valid_metrics'
-        # 'mean_revisit_time': 'mean_revisit_time',
-        # 'quality_pixel_cnt': 'quality_pixel_cnt'
     }
+
     
     chunk_original = chunk.copy(deep=True) if testing_mode else None
 
@@ -1366,12 +1395,17 @@ def full_pipeline_chunk(chunk: xr.DataArray,
         fall_doy = falling_doy.values  # (ny, nx)
 
         # Spline value at the exact transition DOYs = ceiling for outside region
-        rise_idx_1d = np.argmin(np.abs(doys_1d[:, None, None] - rise_doy[None]), axis=0)
-        fall_idx_1d = np.argmin(np.abs(doys_1d[:, None, None] - fall_doy[None]), axis=0)
+        # rise_idx_1d = np.argmin(np.abs(doys_1d[:, None, None] - rise_doy[None]), axis=0)
+        # fall_idx_1d = np.argmin(np.abs(doys_1d[:, None, None] - fall_doy[None]), axis=0)
+
+        # USE THE ALREADY COMPUTED INDICES DIRECTLY (Zero memory overhead, zero searching)
+        rise_idx_1d = rising_idx.values
+        fall_idx_1d = falling_idx.values
 
         # (ny, nx) — the spline value at each pixel's transition DOY
         spline_at_rise = vals[rise_idx_1d, np.arange(ny)[:, None], np.arange(nx)[None, :]]
         spline_at_fall = vals[fall_idx_1d, np.arange(ny)[:, None], np.arange(nx)[None, :]]
+
 
         for t_idx in range(len(doys_1d)):
             d = doys_1d[t_idx]
