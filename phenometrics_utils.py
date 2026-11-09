@@ -815,6 +815,7 @@ class ChunkedTimeSeriesReaderStreaming:
                     else:
                         chunk_results = process_fn(evi_context,
                                                    target_year=self.target_year,
+                                                   ndfsi=ndfsi_context if self.use_ndfsi else None,
                                                    _pool=pool,
                                                    **process_kwargs)
 

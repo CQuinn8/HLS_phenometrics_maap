@@ -1049,20 +1049,12 @@ def get_context_months_from_gaps(
 def mask_snow_ndfsi_chunk(
     chunk:           xr.DataArray,
     ndfsi:           xr.DataArray,
+    hemisphere:      str = 'North',
     ndfsi_threshold: float = 0.4,
     background_pct:  float = 0.05,
-    hemisphere:      str = 'North', # add hemisphere function
     apply_season_guard: bool = True,
 ) -> tuple[xr.DataArray, np.ndarray]:
-    """
-    Returns:
-        chunk_masked  : EVI2 with snow pixels replaced by background
-        ndfsi_hit_cnt : (y, x) int16 array — number of timesteps masked
-                        per pixel, 0 = never masked
-    """
-    # Reindex NDFSI onto EVI2 time axis — some EVI2 acquisition dates may
-    # have no companion NDFSI file; those timesteps get NaN which evaluates
-    # False in snow_mask, leaving the EVI2 value
+    
     ndfsi = ndfsi.reindex(time=chunk.time, method=None)
     background = (
         chunk
@@ -1070,20 +1062,20 @@ def mask_snow_ndfsi_chunk(
         .drop_vars("quantile", errors="ignore")
         .clip(min=0.0)
     )
-    snow_mask     = ndfsi > ndfsi_threshold
+    
+    snow_mask = (ndfsi > ndfsi_threshold)
 
+    # Seasonal Guardrail
     if apply_season_guard:
         doy = chunk.time.dt.dayofyear
         if hemisphere == 'North':
-            # Late Oct to Early June
             season_mask = (doy >= 300) | (doy <= 160)
         else:
-            # South: May to late November - Fine tune
             season_mask = (doy >= 120) & (doy <= 330)
             
         snow_mask = snow_mask & season_mask
-    
-    ndfsi_hit_cnt = snow_mask.sum(dim="time").values.astype(np.int16)   # (y, x)
+
+    ndfsi_hit_cnt = snow_mask.sum(dim="time").values.astype(np.int16)
 
     print(f"  NDFSI masked : {int((ndfsi_hit_cnt > 0).sum()):,} px affected | "
           f"{int(ndfsi_hit_cnt.sum()):,} total obs replaced "
@@ -1236,7 +1228,7 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     # Step 2: Snow masking
     ndfsi_hit_cnt = None
     if ndfsi is not None:
-        print("Step 1b: NDFSI snow masking")
+        print("Step 2: NDFSI snow masking")
         chunk, ndfsi_hit_cnt = mask_snow_ndfsi_chunk(chunk, ndfsi)
 
     chunk_post_threshold = chunk.copy(deep=True) if testing_mode else None
