@@ -828,9 +828,9 @@ def annual_phenometrics_chunk(chunk: xr.DataArray,
                         'amp': pixel_evi[p_idx] - pixel_evi[gu_min_idx],
                         'peak_evi2': pixel_evi[p_idx], 'min_evi2': pixel_evi[gu_min_idx]
                     }]
-
-            target_cycles = sorted(target_cycles, key=lambda x: x['peak_evi2'], reverse=True)[:n_cycles]
+                    
             cycle_count[yi, xi] = len(target_cycles) 
+            target_cycles = sorted(target_cycles, key=lambda x: x['peak_evi2'], reverse=True)[:n_cycles]
 
             # 3. Calculate phenometrics accepted cycles
             for c_idx, cycle in enumerate(target_cycles):
@@ -1051,6 +1051,8 @@ def mask_snow_ndfsi_chunk(
     ndfsi:           xr.DataArray,
     ndfsi_threshold: float = 0.4,
     background_pct:  float = 0.05,
+    hemisphere:      str = 'North', # add hemisphere function
+    apply_season_guard: bool = True,
 ) -> tuple[xr.DataArray, np.ndarray]:
     """
     Returns:
@@ -1069,6 +1071,18 @@ def mask_snow_ndfsi_chunk(
         .clip(min=0.0)
     )
     snow_mask     = ndfsi > ndfsi_threshold
+
+    if apply_season_guard:
+        doy = chunk.time.dt.dayofyear
+        if hemisphere == 'North':
+            # Late Oct to Early June
+            season_mask = (doy >= 300) | (doy <= 160)
+        else:
+            # South: May to late November - Fine tune
+            season_mask = (doy >= 120) & (doy <= 330)
+            
+        snow_mask = snow_mask & season_mask
+    
     ndfsi_hit_cnt = snow_mask.sum(dim="time").values.astype(np.int16)   # (y, x)
 
     print(f"  NDFSI masked : {int((ndfsi_hit_cnt > 0).sum()):,} px affected | "
@@ -1084,11 +1098,18 @@ def calc_obs_snow_background(
         snow_doy_start: int = 300,
         snow_doy_end: int = 100,
         min_snow_obs: int = 3,
+        hemisphere: str = 'North',
         debug_y: int =  None,
-        debug_x: int = None,
+        debug_x: int = None,    
 ) -> xr.DataArray:
     doy = chunk.time.dt.dayofyear
-    snow_mask = (doy >= snow_doy_start) | (doy <= snow_doy_end)
+    
+    if hemisphere == 'North':
+        snow_mask = (doy >= 300) | (doy <= 100)
+    else:
+        snow_mask = (doy >= 120) & (doy <= 280) # Fine Tune
+    #snow_mask = (doy >= snow_doy_start) | (doy <= snow_doy_end)
+    
     snow_obs = chunk.isel(time=snow_mask)
     n_valid = snow_obs.notnull().sum(dim="time")
 
