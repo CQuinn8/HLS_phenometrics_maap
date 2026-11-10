@@ -2,11 +2,10 @@
 set -euo pipefail
 
 # 1. Install system-level dependencies using apt-get 
-if command -v apt-get >/dev/null 2>&1; then
-    echo "Updating apt and installing system dependencies..."
-    sudo apt-get update -y || apt-get update -y
-    sudo apt-get install -y curl libxml2 || apt-get install -y curl libxml2
-fi
+command -v curl >/dev/null 2>&1 || { 
+    echo "Installing curl..."
+    conda install -y --solver classic -c conda-forge libxml2 curl
+}
 
 # 2. Install Conda packages
 echo "Installing earthaccess and awscli via Conda..."
