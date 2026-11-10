@@ -1,7 +1,5 @@
 #!/usr/bin/env -S bash --login
 set -euo pipefail
-# Get current location of build script
-# basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
 # 1. Install system-level dependencies using apt-get 
 if command -v apt-get >/dev/null 2>&1; then

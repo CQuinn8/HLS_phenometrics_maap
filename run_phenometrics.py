@@ -142,7 +142,7 @@ def run_phenometrics(
         context_months=context_months,
         target_year=target_year,
         default_crs=tile_epsg,
-        use_ndfsi=True,
+        use_ndfsi=True
     )
 
     configured_pipeline = partial(
@@ -163,10 +163,7 @@ def run_phenometrics(
 
 
 if __name__ == "__main__":
-    import multiprocessing as mp
-    mp.set_start_method('spawn', force=True)
-
-    
+  
     args = parse_args()
     print(args)
     run_phenometrics(
@@ -182,6 +179,3 @@ if __name__ == "__main__":
         run_label         = args.run_label,
         n_workers = args.n_workers,
     )
-    # python run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily-subset-SERC/ --output_path=temp_out --tile=18SUJ --target_year=2020 --chunk_size=10 --n_workers=2
-    
-    ## python run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily/ --output_path=temp_out --tile=18SUJ --target_year=2020 --chunk_size=500 --n_workers=6 --roi_file="/projects/my-public-bucket/hls/testing/ROIs/MD_transect/POLYGON.shp"
