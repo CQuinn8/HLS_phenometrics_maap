@@ -163,6 +163,9 @@ def run_phenometrics(
 
 
 if __name__ == "__main__":
+    import multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
+
     
     args = parse_args()
     print(args)

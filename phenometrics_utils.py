@@ -841,6 +841,7 @@ class ChunkedTimeSeriesReaderStreaming:
                         use_tiled = (blockx >= 16 and blocky >= 16)
 
                         if metric not in out_datasets:
+                            print(metric)
                             profile = {
                                 'driver': 'GTiff',
                                 'height': self.ny,
@@ -864,56 +865,64 @@ class ChunkedTimeSeriesReaderStreaming:
                                 pass
 
                             out_path = os.path.join(self.output_dir, f"{metric}.tif")                                            
-                            if os.path.exists(out_path):
-                                with rio.open(out_path, 'r') as ds_check:
-                                    meta_ok = (
-                                        ds_check.width == profile['width'] and
-                                        ds_check.height == profile['height'] and
-                                        ds_check.count == profile['count'] and
-                                        ds_check.dtypes[0] == np.dtype(profile['dtype']).name and
-                                        ds_check.crs == profile['crs'] and
-                                        ds_check.transform == profile['transform']
-                                    )
-                                    
-                            if os.path.exists(out_path):
-                                print(f"Recreating existing file: {out_path}", flush=True)
-                                os.remove(out_path)
-                            
-                            ds = rio.open(out_path, 'w', **profile)
-                                
-                            out_datasets[metric] = ds
-                            metric_valid_counts[metric] = 0
-
-                        ds = out_datasets[metric]
-
-                        y_slice, x_slice = self.chunk_slices[chunk_idx]
-                        row_off = y_slice.start
-                        col_off = x_slice.start
-                        height = y_slice.stop - y_slice.start
-                        width = x_slice.stop - x_slice.start
-                        window = Window(col_off, row_off, width, height)
-                        write_arr = arr.astype('float32')
+                        
+                            # ---------------------------------------------------------
+                            # 1. INITIALIZE THE FILE ONCE
+                            # ---------------------------------------------------------
+                            if metric not in metric_valid_counts:
+                                profile = {
+                                    'driver': 'GTiff',
+                                    'height': self.ny,
+                                    'width': self.nx,
+                                    'count': 1,
+                                    'dtype': 'float32',
+                                    'crs': self.crs,
+                                    'transform': getattr(self, 'transform'),
+                                    'nodata': float(self._file_nodata) if getattr(self, "_file_nodata", None) is not None else -9999.0,
+                                    # CRITICAL FIX: No compression during windowed writes
+                                    'tiled': True,
+                                    'blockxsize': 256,
+                                    'blockysize': 256,
+                                }
     
-                        nod = ds.profile.get('nodata', None)
-                        if nod is not None and np.isnan(nod) is False:
-                            if np.isnan(write_arr).any():
-                                write_arr = np.where(np.isnan(write_arr), nod, write_arr)
-
-                        if write_arr.shape != (height, width):
-                            raise RuntimeError(f"write array shape {write_arr.shape} != window {(height, width)}")
-
-                        # Write into the file (single band)
-                        ds.write(write_arr, 1, window=window)
-                        metric_valid_counts[metric] += np.sum(~np.isnan(write_arr))
-
-                    del chunk_results
-                    del evi_da_full
-                    if doy_da_full is not None:
-                        del doy_da_full
-                    gc.collect()
-
-            for metric, ds in out_datasets.items():
-                ds.close()
+                                if os.path.exists(out_path):
+                                    print(f"Recreating existing file: {out_path}", flush=True)
+                                    os.remove(out_path)
+                                
+                                # Open 'w' and instantly close to lay down the TIFF structure
+                                with rio.open(out_path, 'w', **profile) as ds_init:
+                                    pass
+                                    
+                                metric_valid_counts[metric] = 0
+    
+                            # ---------------------------------------------------------
+                            # 2. PREPARE THE DATA
+                            # ---------------------------------------------------------
+                            y_slice, x_slice = self.chunk_slices[chunk_idx]
+                            row_off = y_slice.start
+                            col_off = x_slice.start
+                            height = y_slice.stop - y_slice.start
+                            width = x_slice.stop - x_slice.start
+                            window = Window(col_off, row_off, width, height)
+                            
+                            # Keep this copy! It protects from joblib shared memory crashes
+                            write_arr = np.array(arr, dtype='float32', copy=True)
+    
+                            # ---------------------------------------------------------
+                            # 3. OPEN (r+), WRITE WINDOW, AND CLOSE IMMEDIATELY
+                            # ---------------------------------------------------------
+                            with rio.open(out_path, 'r+') as ds:
+                                nod = ds.profile.get('nodata', None)
+                                if nod is not None and not np.isnan(nod):
+                                    if np.isnan(write_arr).any():
+                                        write_arr = np.where(np.isnan(write_arr), nod, write_arr)
+    
+                                if write_arr.shape != (height, width):
+                                    raise RuntimeError(f"write array shape {write_arr.shape} != window {(height, width)}")
+    
+                                ds.write(write_arr, 1, window=window)
+                                
+                            metric_valid_counts[metric] += np.sum(~np.isnan(write_arr))
 
             print(f"\n  Saving {self.target_year}: {len(metric_valid_counts)} metrics")
             for metric, n_valid in metric_valid_counts.items():

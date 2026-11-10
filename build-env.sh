@@ -3,32 +3,27 @@ set -euo pipefail
 # Get current location of build script
 # basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
-# install curl if not available
-# command -v curl >/dev/null 2>&1 || { 
-#     echo "Installing curl..."
-#     conda install curl
-#     conda install earthaccess
-#     conda install -c conda-forge awscli -y
-# }
-command -v curl >/dev/null 2>&1 || { 
-    echo "Installing curl..."
-    conda install --solver classic -y curl
-}
+# 1. Install system-level dependencies using apt-get 
+if command -v apt-get >/dev/null 2>&1; then
+    echo "Updating apt and installing system dependencies..."
+    sudo apt-get update -y || apt-get update -y
+    sudo apt-get install -y curl libxml2 || apt-get install -y curl libxml2
+fi
 
-echo "Installing earthaccess and awscli..."
-conda install --solver classic -y earthaccess
-conda install --solver classic -c conda-forge awscli -y
+# 2. Install Conda packages
+echo "Installing earthaccess and awscli via Conda..."
+conda install -y -c conda-forge curl earthaccess awscli
 
-# install uv
+# 3. Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env
+source $HOME/.cargo/env || source $HOME/.local/bin/env
 
-# Get current location of build script
+# 4. Get current location of build script
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
-# install dependencies
+# 5. Install Python dependencies
 UV_PROJECT=$basedir uv sync --no-dev
 
-# unset PROJ env vars
+# 6. Unset PROJ env vars (Prevents projection conflicts between GDAL versions)
 unset PROJ_LIB
 unset PROJ_DATA

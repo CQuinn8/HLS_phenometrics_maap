@@ -432,55 +432,7 @@ def setup_logger(mgrs_tile, start_date, end_date):
     logger.addHandler(file_handler)
 
     return logger, log_file
-
-
-def upload_all_outputs_to_s3(mgrs_tile, date):
-    logger.info("Uploading outputs to S3")
-
-    s3 = boto3.client("s3")
-
-    uploaded = []
-
-    # Create search pattern for files like: *18TWN*20231005*.tif
-    julian_date = datetime.strptime(date, "%Y-%m-%d").strftime("%Y%j")
-    search_pattern = os.path.join(OUTPUT_DIR, f"*{mgrs_tile}*{julian_date}*.tif")
-    # Find files
-    tif_files = glob.glob(search_pattern)
-
-    for fp in tif_files:
-        key = (
-            f"{S3_PREFIX}/"
-            f"{mgrs_tile}_{date}/"
-            f"{os.path.basename(fp)}"
-        )
-
-        logger.info(f"Uploading s3://{S3_BUCKET}/{key}")
-
-        s3.upload_file(
-            fp,
-            S3_BUCKET,
-            key
-        )
-
-        uploaded.append(f"s3://{S3_BUCKET}/{key}")
-
-    return uploaded
-
-
-def upload_to_s3(local_file, mgrs_tile, date):
-    s3 = boto3.client("s3")
-    key = (
-        f"{S3_PREFIX}/"
-        f"{mgrs_tile}_{date}/"
-        f"{os.path.basename(local_file)}"
-    )
-    s3.upload_file(
-        local_file,
-        S3_BUCKET,
-        key,
-    )
-
-    logger.info(f"Uploaded s3://{S3_BUCKET}/{key}")
+    
 
 # =============================================================================
 # MAIN
@@ -571,8 +523,6 @@ def process_hls_tile(mgrs_tile, start_date, end_date, output_dir, n_workers = 1)
     except Exception as e:
         logger.exception("PROCESSING FAILED")
         sys.exit(1)
-
-    # cleanup()
 
 
 # =============================================================================
