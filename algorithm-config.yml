@@ -20,6 +20,10 @@ inputs:
     description: e.g. true
     name: save_scenes
     required: false
+  - default: ''
+    description: e.g. "my_s3/prefix"
+    name: output_prefix
+    required: false
 queue: maap-dps-worker-64gb
 repository_url: https://github.com/CQuinn8/HLS_phenometrics_maap
 run_command: HLS_phenometrics_maap/run.sh
