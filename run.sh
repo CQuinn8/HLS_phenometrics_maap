@@ -7,14 +7,15 @@ set -euo pipefail
 basedir=$(dirname "$(readlink -f "$0")")
 
 # --- 1. Argument Parsing ---
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo "Error: Expected 2 or 3 arguments, got $#"
-    echo "Usage: $0 <tile> <target_year> [save_scenes=false]"
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+    echo "Error: Expected 2 - 4  arguments, got $#"
+    echo "Usage: $0 <tile> <target_year> [save_scenes=false] [output_prefix=shared/colinquinn/HLS_phenometrics]"
     exit 1
 fi
 tile="$1"
 target_year="$2"
 save_scenes="${3:-false}"
+output_prefix="${4:-}"
 
 # --- 2. Configuration & Paths ---
 basedir=$(dirname "$(readlink -f "$0")")
@@ -106,8 +107,19 @@ cmd=(
     --chunk_size="${chunk_size}"
     --n_workers="$N_WORKERS"
 )
-# run_phenometrics.py --data_dir=output --output_path=output --tile=18SUJ --target_year=2024 --context_months=12 --chunk_size=2200 --n_workers=16
-# run_phenometrics.py --data_dir=/projects/my-public-bucket/hls/testing/daily-subset-SERC/ --output_path=output-SERC --tile=18SUJ --target_year=2021 --context_months=12 --chunk_size=10 --n_workers=2
+# run_phenometrics.py --data_dir="/home/jovyan/code/HLS_phenometrics/11SPS-multipeak/" --output_path=output --tile=11SPS --target_year=2024 --context_months=12 --chunk_size=100 --n_workers=2
+
+UV_PROJECT="${basedir}" "${cmd[@]}"
+
+
+log "Stage 4: Uploading phenometrics to S3"
+cmd=(
+    uv run --no-dev "${basedir}/phenometrics_output.py" 
+    --tile="${tile}"
+    --results_path="${OUTPUT_DIR}"
+    --output_prefix="${output_prefix}"
+)
+# python phenometrics_output.py --tile="11SPS" --results_path="output-test" --output_prefix="shared/colinquinn/test"
 
 UV_PROJECT="${basedir}" "${cmd[@]}"
 
