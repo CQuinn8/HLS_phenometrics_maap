@@ -7,14 +7,15 @@ set -euo pipefail
 basedir=$(dirname "$(readlink -f "$0")")
 
 # --- 1. Argument Parsing ---
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo "Error: Expected 2 or 3 arguments, got $#"
-    echo "Usage: $0 <tile> <target_year> [save_scenes=false]"
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+    echo "Error: Expected 2 - 4  arguments, got $#"
+    echo "Usage: $0 <tile> <target_year> [save_scenes=false] [output_prefix=shared/colinquinn/HLS_phenometrics]"
     exit 1
 fi
 tile="$1"
 target_year="$2"
 save_scenes="${3:-false}"
+output_prefix="${4:-}"
 
 # --- 2. Configuration & Paths ---
 basedir=$(dirname "$(readlink -f "$0")")
@@ -111,11 +112,16 @@ cmd=(
 UV_PROJECT="${basedir}" "${cmd[@]}"
 
 
-# log "Stage 4: Uploading phenometrics to S3"
-# cmd=(
-#     uv run --no-dev "${basedir}/upload_phenometrics.py"
-# )
-# UV_PROJECT="${basedir}" "${cmd[@]}"
+log "Stage 4: Uploading phenometrics to S3"
+cmd=(
+    uv run --no-dev "${basedir}/phenometrics_output.py" 
+    --tile="${tile}"
+    --results_path="${OUTPUT_DIR}"
+    --output_prefix="${output_prefix}"
+)
+# python output_phenometrics.py --tile="11SPS" --results_path="output-test"
+
+UV_PROJECT="${basedir}" "${cmd[@]}"
 
 log "===== Pipeline Complete ====="
 exit 0

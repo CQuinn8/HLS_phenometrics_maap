@@ -142,7 +142,7 @@ def run_phenometrics(
         context_months=context_months,
         target_year=target_year,
         default_crs=tile_epsg,
-        use_ndfsi=True
+        use_ndfsi=False
     )
 
     configured_pipeline = partial(
@@ -177,5 +177,5 @@ if __name__ == "__main__":
         chunk_size        = args.chunk_size,
         chunks_in_memory  = args.chunks_in_memory,
         run_label         = args.run_label,
-        n_workers = args.n_workers,
+        n_workers         = args.n_workers,
     )

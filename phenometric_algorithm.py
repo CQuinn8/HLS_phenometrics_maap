@@ -1230,6 +1230,9 @@ def full_pipeline_chunk(chunk: xr.DataArray,
     if ndfsi is not None:
         print("Step 2: NDFSI snow masking")
         chunk, ndfsi_hit_cnt = mask_snow_ndfsi_chunk(chunk, ndfsi)
+        
+        del ndfsi
+        gc.collect()
 
     chunk_post_threshold = chunk.copy(deep=True) if testing_mode else None
    

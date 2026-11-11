@@ -3,6 +3,7 @@ import xarray as xr
 import rioxarray as rxr
 import rasterio as rio
 from rasterio.windows import from_bounds
+from rasterio.shutil import copy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -761,7 +762,7 @@ class ChunkedTimeSeriesReaderStreaming:
                     print(f"\n  Chunk {chunk_idx}/{self.n_chunks}")
                     result = self.load_chunk(chunk_idx)
 
-                    evi_da_full, ndfsi_da_full = result 
+                    evi_da_full, ndfsi_da_full = result                       
                     doy_da_full      = None
                     comp_start_full  = None 
 
@@ -776,6 +777,10 @@ class ChunkedTimeSeriesReaderStreaming:
      
                     evi_context = evi_da_full.sel(time=slice(start_context_year, end_context_year))
                     ndfsi_context = ndfsi_da_full.sel(time=slice(start_context_year, end_context_year))
+                    if ndfsi_context is not None:
+                        ndfsi_context = ndfsi_context.astype(np.float16)
+                        del ndfsi_da_full
+                    
                     doy_context = (doy_da_full.sel(time=slice(start_context_year, end_context_year))
                                    if doy_da_full is not None else None)
 
@@ -785,6 +790,7 @@ class ChunkedTimeSeriesReaderStreaming:
                         comp_start_context = comp_start_full[time_mask]
                     else:
                         comp_start_context = None
+                    del evi_da_full
 
                     # HANDLE FIRST AND LAST YEAR EDGE CASES FOR THE CONTEXT WINDOW BUFFERS
                     if context_months > 0:
@@ -879,7 +885,6 @@ class ChunkedTimeSeriesReaderStreaming:
                                     'crs': self.crs,
                                     'transform': getattr(self, 'transform'),
                                     'nodata': float(self._file_nodata) if getattr(self, "_file_nodata", None) is not None else -9999.0,
-                                    # CRITICAL FIX: No compression during windowed writes
                                     'tiled': True,
                                     'blockxsize': 256,
                                     'blockysize': 256,
@@ -929,6 +934,39 @@ class ChunkedTimeSeriesReaderStreaming:
                 print(f"    {metric}: {n_valid} valid pixels")
 
             gc.collect()
+        
+        print(f"\n  Compressing {len(metric_valid_counts)} metrics...")
+        
+        for metric in metric_valid_counts.keys():
+            out_path = os.path.join(self.output_dir, f"{metric}.tif")
+            tmp_path = os.path.join(self.output_dir, f"{metric}_tmp.tif")
+            
+            if os.path.exists(out_path):
+                # 1. Open the file to check datatype
+                with rio.open(out_path, 'r') as src:
+                    out_dtype = src.profile['dtype']
+                
+                # 2. Pick the right predictor
+                # Predictor 3 for floats, Predictor 2 for integers
+                optimal_predictor = 3 if out_dtype.startswith('float') else 2
+
+                # 3. Compress
+                with rio.Env(GDAL_NUM_THREADS='ALL_CPUS'):
+                    copy(
+                        out_path, 
+                        tmp_path, 
+                        strict=True, 
+                        compress='DEFLATE', 
+                        predictor=optimal_predictor, 
+                        tiled=True,
+                        blockxsize=256,
+                        blockysize=256
+                    )
+                # Overwrite the uncompressed file
+                os.replace(tmp_path, out_path)
+                
+        print("  Compression complete.")
+        return chunk_results 
 
     def enter_processing_stage(
             self,
