@@ -501,13 +501,13 @@ class ChunkedTimeSeriesReaderStreaming:
         print(f"Memory per chunk: {chunk_mem / 1e6:.1f} MB")
 
     
-    def _load_scene_fast(self, scene) -> tuple[np.ndarray | None, np.ndarray | None]:
+    def _load_scene_fast(self, scene) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         """
         Fast scene loading using pre-computed window.
         No clipping, no CRS checks, no rioxarray overhead.
         """
         if not scene.filepath.exists():
-            return None, None
+            return None, None, None
 
         try:
             with rio.open(scene.filepath) as src:
@@ -521,7 +521,7 @@ class ChunkedTimeSeriesReaderStreaming:
                     evi_data[evi_data == nodata] = np.nan
         except Exception as e:
             print(f"  Error reading {scene.filepath.name}: {e}")
-            return None, None
+            return None, None, None
 
         # DOY 
         doy_data = None
@@ -555,6 +555,7 @@ class ChunkedTimeSeriesReaderStreaming:
         
     def _load_date_fast(self, date) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         """Load and combine all scenes for a date using fast reader."""
+        try:
         scene_list = self.scenes_by_date[date]
 
         if len(scene_list) == 1:
