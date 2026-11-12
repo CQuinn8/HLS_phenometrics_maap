@@ -209,7 +209,10 @@ def infill_gaps_from_context_years(
                 continue
 
             ts = pd.Timestamp(ctx_da.time.values[c_idx])
-            new_ts = ts.replace(year=target_year)
+
+            # Error in leap year infill occurs for 2023 11SPS for example
+            year_diff = target_year - ts.year
+            new_ts = ts + pd.DateOffset(years=year_diff)
             new_ts_np = np.datetime64(new_ts)
 
             # If timestamp already exists, fill its NaN pixels directly
