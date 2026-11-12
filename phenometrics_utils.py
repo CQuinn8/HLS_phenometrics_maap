@@ -555,7 +555,6 @@ class ChunkedTimeSeriesReaderStreaming:
         
     def _load_date_fast(self, date) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         """Load and combine all scenes for a date using fast reader."""
-        try:
         scene_list = self.scenes_by_date[date]
 
         if len(scene_list) == 1:
